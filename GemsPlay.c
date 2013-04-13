@@ -320,6 +320,7 @@ static UINT8 FMADDRTBL[0x3D] =	// [1402]
 /*  FMVTBL - contains (6) 7-byte entires, one per voice:
 *	byte 0: FRLxxVVV	flag byte, where F=free, R=release phase, L=locked, VVV=voice num
 *						VVV is numbered (0,1,2,4,5,6) for writing directly to key on/off reg
+*          [FRLTSVVV    T - self-timed note, S - SFX tempo]
 *	byte 1: priority	only valid for in-use (F=0) voices
 *	byte 2: notenum	    "
 *	byte 3: channel	    "
@@ -327,6 +328,7 @@ static UINT8 FMADDRTBL[0x3D] =	// [1402]
 *	byte 5: msb of duration timer
 *	byte 6: release timer */
 
+#ifndef DUAL_SUPPORT
 static UINT8 FMVTBL[43] =	// [1581]
 {	0x80, 0, 0x50, 0, 0, 0, 0,		// fm voice 0
 	0x81, 0, 0x50, 0, 0, 0, 0,		// fm voice 1
@@ -337,6 +339,24 @@ static UINT8 FMVTBL[43] =	// [1581]
 	0xFF};
 static UINT8* FMVTBLCH6 = &FMVTBL[4*7];
 static UINT8* FMVTBLCH3 = &FMVTBL[5*7];
+#else
+static UINT8 FMVTBL[85] =	// [1581]
+{	0x80, 0, 0x50, 0, 0, 0, 0,		// fm voice 0
+	0x81, 0, 0x50, 0, 0, 0, 0,		// fm voice 1
+	0x84, 0, 0x50, 0, 0, 0, 0,		// fm voice 3
+	0x85, 0, 0x50, 0, 0, 0, 0,		// fm voice 4
+	0x80, 0, 0x50, 0x80, 0, 0, 0,		// fm voice 1-0
+	0x81, 0, 0x50, 0x80, 0, 0, 0,		// fm voice 1-1
+	0x84, 0, 0x50, 0x80, 0, 0, 0,		// fm voice 1-3
+	0x85, 0, 0x50, 0x80, 0, 0, 0,		// fm voice 1-4
+	0x86, 0, 0x50, 0x80, 0, 0, 0,		// fm voice 1-5
+	0x82, 0, 0x50, 0x80, 0, 0, 0,		// fm voice 1-2
+	0x86, 0, 0x50, 0, 0, 0, 0,		// [159D, FMVTBLCH6] fm voice 5 (supports digital)
+	0x82, 0, 0x50, 0, 0, 0, 0,		// [15A4, FMVTBLCH3] fm voice 2 (supports CH3 poly mode)
+	0xFF};
+static UINT8* FMVTBLCH6 = &FMVTBL[10*7];
+static UINT8* FMVTBLCH3 = &FMVTBL[11*7];
+#endif
 
 static UINT8 PSGVTBL[22] =	// [15AC]
 {	0x80, 0, 0x50, 0, 0, 0, 0,		// normal type voice, number 0
@@ -353,11 +373,13 @@ enum
 {
 	VTBLFLAGS	= 0,
 	VTBLPRIO	= 1,
+	VTBLNOTE	= 2,	// [Note: The VTBLNOTE constant is missing in the original source code.]
 	VTBLCH		= 3,
 	VTBLDL		= 4,
 	VTBLDH		= 5,
 	VTBLRT		= 6
 };
+#define CHIP_BNK(x)	((x[VTBLCH] & 0x80) >> 5)
 
 
 // DATA AREA
@@ -416,8 +438,8 @@ static __inline void Write24Bit(UINT8* Data, const UINT32 Value)
 
 static __inline void FMWrite(UINT8 Addr, UINT8 Reg, UINT8 Data)
 {
-	YM2612_Write((Addr << 1) | 0, Reg);
-	YM2612_Write((Addr << 1) | 1, Data);
+	YM2612_Write(Addr | 0, Reg);
+	YM2612_Write(Addr | 1, Data);
 	
 	return;
 }
@@ -495,7 +517,7 @@ static void DOPSGENV(void)
 			pdata.whdflg[CurChn] = 0x01;	// flag hardware update [IY+FLG]
 			pdata.psgenv[CurChn] = 0x00;	// shut off envelope processing [IY+MODE]
 			if (CurChn == 3)				// was this TG4 (noise)
-				PSGVTBLTG3[0] &= ~0x20;		// yes - clear locked bit in TG3
+				PSGVTBLTG3[VTBLFLAGS] &= ~0x20;	// yes - clear locked bit in TG3
 		}
 		//ckof:
 		if (CmdBits & 0x02)					// test bit 1
@@ -528,18 +550,18 @@ static void DOPSGENV(void)
 			break;	// off.
 		case 1:	// attack mode?
 			//mode1:
-			pdata.whdflg[CurChn] = 0x01;		// flag hardware update [IY+FLG]
+			pdata.whdflg[CurChn] = 0x01;							// flag hardware update [IY+FLG]
 			CurVol = pdata.psglev[CurChn] - pdata.psgatk[CurChn];	// load level [IY+LEV], subtract attack rate [IY+ATK]
 			// [Note: The original code just tests for Carry and Zero flags of the UINT8 subtraction.]
-			if (CurVol > 0 && CurVol > pdata.psgalv[CurChn])	// attack finished, [IY+ALV]
+			if (CurVol > 0 && CurVol > pdata.psgalv[CurChn])		// attack finished, [IY+ALV]
 			{
-				pdata.psglev[CurChn] = (UINT8)CurVol;			// save new level [IY+LEV]
+				pdata.psglev[CurChn] = (UINT8)CurVol;				// save new level [IY+LEV]
 			}
 			else
 			{
 				//atkend:
-				pdata.psglev[CurChn] = pdata.psgalv[CurChn];	// save attack level as new level [IY+LEV]
-				pdata.psgenv[CurChn] = 2;						// switch to decay mode [IY+MODE]
+				pdata.psglev[CurChn] = pdata.psgalv[CurChn];		// save attack level as new level [IY+LEV]
+				pdata.psgenv[CurChn] = 2;							// switch to decay mode [IY+MODE]
 			}
 			break;
 		case 2:	// decay mode?
@@ -553,14 +575,14 @@ static void DOPSGENV(void)
 				if (CurVol < 0x100 && CurVol < pdata.psgslv[CurChn])
 				{
 					//dksav:
-					pdata.psglev[CurChn] = (UINT8)CurVol;		// save new level [IY+LEV]
+					pdata.psglev[CurChn] = (UINT8)CurVol;			// save new level [IY+LEV]
 				}
 				else
 				{
 					// caused a wrap - we're done || decay finished
 					//dkyend:
 					pdata.psglev[CurChn] = pdata.psgslv[CurChn];	// save sustain level [IY+LEV]
-					pdata.psgenv[CurChn] = 3;					// set sustain mode [IY+MODE]
+					pdata.psgenv[CurChn] = 3;						// set sustain mode [IY+MODE]
 				}
 			}
 			else if (pdata.psglev[CurChn] == pdata.psgslv[CurChn])
@@ -568,7 +590,7 @@ static void DOPSGENV(void)
 				// decay finished
 				//dkyend:
 				pdata.psglev[CurChn] = pdata.psgslv[CurChn];		// save sustain level [IY+LEV]
-				pdata.psgenv[CurChn] = 3;						// set sustain mode [IY+MODE]
+				pdata.psgenv[CurChn] = 3;							// set sustain mode [IY+MODE]
 			}
 			else
 			{
@@ -576,14 +598,14 @@ static void DOPSGENV(void)
 				if (CurVol >= 0x00 && CurVol >= pdata.psgslv[CurChn])
 				{
 					//dksav:
-					pdata.psglev[CurChn] = (UINT8)CurVol;		// save new level [IY+LEV]
+					pdata.psglev[CurChn] = (UINT8)CurVol;			// save new level [IY+LEV]
 				}
 				else
 				{
 					// caused a wrap - we're done || decay finished
 					//dkyend:
 					pdata.psglev[CurChn] = pdata.psgslv[CurChn];	// save sustain level [IY+LEV]
-					pdata.psgenv[CurChn] = 3;					// set sustain mode [IY+MODE]
+					pdata.psgenv[CurChn] = 3;						// set sustain mode [IY+MODE]
 				}
 			}
 			break;
@@ -592,20 +614,20 @@ static void DOPSGENV(void)
 			break;
 		case 4:	// check for sustain phase
 			//mode4:
-			pdata.whdflg[CurChn] = 0x01;		// flag hardware update [IY+FLG]
+			pdata.whdflg[CurChn] = 0x01;							// flag hardware update [IY+FLG]
 			CurVol = pdata.psglev[CurChn] + pdata.psgrrt[CurChn];	// load level [IY+LEV], add release rate [IY+RRT]
 			// [Note: The original code just tests for the Carry flag of the UINT8 addition.]
 			if (CurVol < 0x100)
 			{
-				pdata.psglev[CurChn] = (UINT8)CurVol;			// save new level [IY+LEV]
+				pdata.psglev[CurChn] = (UINT8)CurVol;				// save new level [IY+LEV]
 			}
 			else
 			{
 				//killenv:
-				pdata.psglev[CurChn] = 0xFF;					// reset level [IY+LEV]
-				pdata.psgenv[CurChn] = 0;						// reset envelope mode [IY+MODE]
-				if (CurChn == 3)		// was this TG4 we just killed?
-					PSGVTBLTG3[0] &= ~0x20;				// yes - clear locked bit in TG3
+				pdata.psglev[CurChn] = 0xFF;						// reset level [IY+LEV]
+				pdata.psgenv[CurChn] = 0;							// reset envelope mode [IY+MODE]
+				if (CurChn == 3)									// was this TG4 we just killed?
+					PSGVTBLTG3[VTBLFLAGS] &= ~0x20;					// yes - clear locked bit in TG3
 				
 				NoteEnd ++;
 			}
@@ -621,12 +643,12 @@ static void DOPSGENV(void)
 	for (CurChn = 0; CurChn < 4; CurChn ++, CmdMask += 0x20)
 	{
 		if (! (pdata.whdflg[CurChn] & 0x01))	// test update flag
-			continue;				// next channel
-		pdata.whdflg[CurChn] = 0x00;		// clear update flag
+			continue;							// next channel
+		pdata.whdflg[CurChn] = 0x00;			// clear update flag
 		
 		TempByt = pdata.psglev[CurChn] >> 4;	// load level [IY+LEV]
-		TempByt |= CmdMask;			// set command bits
-		PSG_Write(TempByt);			// write new level
+		TempByt |= CmdMask;						// set command bits
+		PSG_Write(TempByt);						// write new level
 	}
 	
 	//vquit:
@@ -819,9 +841,9 @@ static void FILLDACFIFO(UINT8 ForceFill)
 				YM2612_Write(0, 0x2B);
 				YM2612_Write(1, 0x00);
 				
-				FMVTBLCH6[0] = 0xC6;
-				FMVTBLCH6[4] = 0x00;
-				FMVTBLCH6[5] = 0x00;
+				FMVTBLCH6[VTBLFLAGS] = 0xC6;
+				FMVTBLCH6[VTBLDL] = 0x00;
+				FMVTBLCH6[VTBLDH] = 0x00;
 				return;
 			}
 			
@@ -851,9 +873,9 @@ static void FILLDACFIFO(UINT8 ForceFill)
 		YM2612_Write(0, 0x2B);
 		YM2612_Write(1, 0x00);
 		
-		FMVTBLCH6[0] = 0xC6;	// mark voice free, unlocked, and releasing
-		FMVTBLCH6[4] = 0x00;	// clear any pending release timer value
-		FMVTBLCH6[5] = 0x00;
+		FMVTBLCH6[VTBLFLAGS] = 0xC6;	// mark voice free, unlocked, and releasing
+		FMVTBLCH6[VTBLDL] = 0x00;		// clear any pending release timer value
+		FMVTBLCH6[VTBLDH] = 0x00;
 		// jp FDFreturn
 	}
 	
@@ -1217,7 +1239,9 @@ static UINT8 seqcmd(UINT8* ChnCCB, UINT8* CHBUFPTR, UINT8 CurChn, UINT8 CmdByte)
 		CurArg = GETSBYTE(ChnCCB, CHBUFPTR);
 		if (CHPATPTR[0] == 1)			// is this a digital patch?
 			CHPATPTR[1] = CurArg;		// yes - update sample rate value
-		//else ;						// no - no effect
+		else
+			//return 0x80;				// no - no effect [ret]
+			return 0x01;				// [that above is actually a bug fixed in GEMS 2.5]
 		return 0x01;	// [jp seqdelay]
 	case 111:	// 111 = goto
 		//seqgoto:
@@ -1241,10 +1265,6 @@ static UINT8 seqcmd(UINT8* ChnCCB, UINT8* CHBUFPTR, UINT8 CurChn, UINT8 CmdByte)
 	case 113:	// 113 = if
 		//seqif:
 		// [For now, eat 4 bytes up.]
-		GETSBYTE(ChnCCB, CHBUFPTR);	// mailbox
-		GETSBYTE(ChnCCB, CHBUFPTR);	// relation
-		GETSBYTE(ChnCCB, CHBUFPTR);	// value
-		GETSBYTE(ChnCCB, CHBUFPTR);	// 8-bit offset
 		{
 			UINT8 CurMBox;
 			UINT8 CurRel;
@@ -1365,10 +1385,10 @@ static void vtimerloop(UINT8 VoiceType, UINT8* VTblPtr)
 	
 	// [Using a for-loop here is soooo much more comfortable than a while.]
 	//vtimerloop0:
-	for ( ; VTblPtr[0] != 0xFF; VTblPtr += 7)
+	for ( ; VTblPtr[VTBLFLAGS] != 0xFF; VTblPtr += 7)
 	{
 		DACxME();
-		if (VTblPtr[0] & 0x08)			// sfx tempo driven? [BIT #3]
+		if (VTblPtr[VTBLFLAGS] & 0x08)	// sfx tempo driven? [BIT #3]
 		{
 			//vtimersfx:
 			if (! (TBASEFLAGS & 0x01))	// [BIT #0]
@@ -1380,46 +1400,50 @@ static void vtimerloop(UINT8 VoiceType, UINT8* VTblPtr)
 		}
 		
 		//vtimerdoit:
-		if (VTblPtr[0] & 0x40)			// if in release [BIT #6]
+		if (VTblPtr[VTBLFLAGS] & 0x40)			// if in release [BIT #6]
 		{
-			VTblPtr[6] --;				//   decrement release timer
-			if (! VTblPtr[6])			//   not at zero, loop
-				VTblPtr[0] &= ~0x40;	//   turn off release flag [RES #6]
+			VTblPtr[VTBLRT] --;					//   decrement release timer
+			if (! VTblPtr[VTBLRT])				//   not at zero, loop
+				VTblPtr[VTBLFLAGS] &= ~0x40;	//   turn off release flag [RES #6]
 			//jr vtimerloop0
 		}
 		else
 		{
 			//vtimerloop2:
-			if (! (VTblPtr[0] & 0x10))	// self timed note? [BIT #4]
+			if (! (VTblPtr[VTBLFLAGS] & 0x10))	// self timed note? [BIT #4]
 				continue;
 			
-			CurVoc = VTblPtr[0] & 0x07;	// yes - save voice # in C
-			VTblPtr[4] ++;				// inc lsb of timer
-			if (VTblPtr[4])
+			CurVoc = VTblPtr[VTBLFLAGS] & 0x07;	// yes - save voice # in C
+			VTblPtr[VTBLDL] ++;					// inc lsb of timer
+			if (VTblPtr[VTBLDL])
 				continue;
-			VTblPtr[5] ++;				// if zero (carry), inc msb
-			if (VTblPtr[5])
+			VTblPtr[VTBLDH] ++;					// if zero (carry), inc msb
+			if (VTblPtr[VTBLDH])
 				continue;
 			
-			VTblPtr[0] &= ~0x18;		// timed out - clear self timer bit [RES #4] and clear sfx bit [RES #3]
-			if ((VTblPtr[0] & 0x2F) == 0x26)	// is it voice 6 (must be FM) and locked?
+			VTblPtr[VTBLFLAGS] &= ~0x18;				// timed out - clear self timer bit [RES #4] and clear sfx bit [RES #3]
+			if ((VTblPtr[VTBLFLAGS] & 0x2F) == 0x26)	// is it voice 6 (must be FM) and locked?
 			{
-				NOTEOFFDIG();			//   yes - its a digital noteoff [else]
+				NOTEOFFDIG();					//   yes - its a digital noteoff [else]
 				// for now, note off don't effect digital
 			}
 			else
 			{
-				VTblPtr[0] |= 0xC0;		//   no - set release bit, set free bit [SET #6], set free bit [SET #7]
+				VTblPtr[VTBLFLAGS] |= 0xC0;		//   no - set release bit, set free bit [SET #6], set free bit [SET #7]
 				
-				//vtnoteoff:				// note off...
-				if (VoiceType)				// voice type? [BIT #0]
+				//vtnoteoff:					// note off...
+				if (VoiceType)					// voice type? [BIT #0]
 				{
-					pdata.psgcom[CurVoc] |= 0x02;		// set key off command [SET #1]
+					pdata.psgcom[CurVoc] |= 0x02;	// set key off command [SET #1]
 				}
 				else
 				{
 					//vtnoteofffm:
+#ifndef DUAL_SUPPORT
 					FMWrite(0, 0x28, CurVoc);	// key off
+#else
+					FMWrite(CHIP_BNK(VTblPtr), 0x28, CurVoc);
+#endif
 				}
 			}
 			
@@ -1696,9 +1720,10 @@ void gems_loop(void)
 		//cmdsamprate:
 		CurChn = GETCBYTE();	// channel
 		ChnPtr = &PATCHDATA[CurChn * 39];
+		CurIdx = GETCBYTE();	// new rate value
 		if (ChnPtr[0] != 1)		// is this a digital patch?
-			return;				// no - no effect
-		ChnPtr[1] = GETCBYTE();	// yes - update sample rate value
+			return;			// no - no effect
+		ChnPtr[1] = CurIdx;		// yes - update sample rate value
 		return;
 	case 27:
 		//cmdstore:
@@ -1828,18 +1853,25 @@ static void CLIPALL(void)
 		VFlags &= 0x07;				// get voice num back
 		CLIPVNUM = VFlags;
 		CurBank = 0;				// point to bank 0
-		if (CLIPVNUM > 3)			// is voice in bank 1 ?
+		if (VFlags > 3)				// is voice in bank 1 ?
 		{
 			VFlags -= 4;			// yes, subtract 4 (map 4-6 >> 0-2)
 			CurBank = 2;			// point to bank 1
 		}
+#ifdef DUAL_SUPPORT
+		CurBank |= CHIP_BNK(VTPtr);
+#endif
 		//clpafm0:
 		FMWr(CurBank, VFlags, 0x40, 0x7F);
 		FMWr(CurBank, VFlags, 0x44, 0x7F);
 		FMWr(CurBank, VFlags, 0x48, 0x7F);
 		FMWr(CurBank, VFlags, 0x4C, 0x7F);
 		
+#ifndef DUAL_SUPPORT
 		FMWrite(0, 0x28, CLIPVNUM);	// key off
+#else
+		FMWrite(CurBank & 0x04, 0x28, CLIPVNUM);
+#endif
 		
 		VTPtr += 7;
 	}
@@ -2078,11 +2110,18 @@ static void APPLYBEND(void)
 	{
 		//pbfmloop:
 		DACxME();
-		if (VTPtr[0] == 0xFF)	// eot?
-			break;				// yup - all done
-		VocNum = VTPtr[0] & 7;	// voice number
-		NoteNum = VTPtr[2];		// note number
-		ChnNum = VTPtr[3];		// channel number
+		if (VTPtr[VTBLFLAGS] == 0xFF)	// eot?
+			break;						// yup - all done
+		VocNum = VTPtr[VTBLFLAGS] & 7;	// voice number
+		NoteNum = VTPtr[VTBLNOTE];		// note number
+		ChnNum = VTPtr[VTBLCH];			// channel number
+#ifdef DUAL_SUPPORT
+		ChnNum &= 0x0F;
+#endif
+		// [not in actual code] prevent from bending CH3 special mode channels
+		if (PATCHDATA[ChnNum * 39 + 2] & 0x40)
+			continue;
+		// [not in actual code end]
 		noteonffreq = GETFREQ(0, ChnNum, NoteNum);	// get the new freq num for this voice
 		
 		if (VocNum <= 3)		// is voice in bank 1 ?
@@ -2094,6 +2133,9 @@ static void APPLYBEND(void)
 			VocNum -= 4;		// yes, subtract 4 (map 4-6 >> 0-2)
 			CurBnk = 2;			// indicates bank 1 to FMWr
 		}
+#ifdef DUAL_SUPPORT
+		CurBnk |= CHIP_BNK(VTPtr);
+#endif
 		//pbfmbank0:
 		FMWr(CurBnk, VocNum, 0xA4, (noteonffreq & 0xFF00) >> 8);	// set frequency msb
 		FMWr(CurBnk, VocNum, 0xA0, (noteonffreq & 0x00FF) >> 0);	// set frequency lsb
@@ -2104,11 +2146,11 @@ static void APPLYBEND(void)
 	{
 		//pbpsgloop:
 		DACxME();
-		if (VTPtr[0] == 0xFF)	// eot?
-			break;				// yup - all done
-		VocNum = VTPtr[0] & 7;	// voice number
-		NoteNum = VTPtr[2];		// note number
-		ChnNum = VTPtr[3];		// channel number
+		if (VTPtr[VTBLFLAGS] == 0xFF)	// eot?
+			break;						// yup - all done
+		VocNum = VTPtr[VTBLFLAGS] & 7;	// voice number
+		NoteNum = VTPtr[VTBLNOTE];		// note number
+		ChnNum = VTPtr[VTBLCH];			// channel number
 		noteonffreq = GETFREQ(1, ChnNum, NoteNum);	// get the new freq num for this voice
 		
 		DACxME();
@@ -2285,7 +2327,7 @@ static void noteonpsg(UINT8 MidChn, UINT8* ChnCCB, UINT8 Mode)
 	
 	if (noteon.voice == 3)
 	{
-		PSGVTBLTG3[0] &= ~0x20;				// assume TG3 is not locked by this noise patch [RES #5]
+		PSGVTBLTG3[VTBLFLAGS] &= ~0x20;		// assume TG3 is not locked by this noise patch [RES #5]
 		
 		if ((ChnPat[-1] & 0x03) == 0x03)	// its TG4 - is it clocked by TG3?
 		{
@@ -2293,11 +2335,11 @@ static void noteonpsg(UINT8 MidChn, UINT8* ChnCCB, UINT8 Mode)
 			PSG_Write(PSGCtrl[DTL] | 0xC0);
 			PSG_Write(PSGCtrl[DTH]);
 			
-			PSGVTBLTG3[0] = 0xA2;			// in the voice table... show TG3 free and locked
-			PSGVTBLTG3[2] = noteon.note;	// and store note and channel (for pitch mod)
-			PSGVTBLTG3[3] = noteon.ch;
+			PSGVTBLTG3[VTBLFLAGS] = 0xA2;		// in the voice table... show TG3 free and locked
+			PSGVTBLTG3[VTBLNOTE] = noteon.note;	// and store note and channel (for pitch mod)
+			PSGVTBLTG3[VTBLCH] = noteon.ch;
 			
-			pdata.psgcom[2] = 4;					// and send a stop command to TG3 env processor
+			pdata.psgcom[2] = 4;				// and send a stop command to TG3 env processor
 		}
 		//psgnoise:
 		PSGCtrl[DTL] = ChnPat[0];			// load and write noise data
@@ -2333,7 +2375,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	//noteondig2:
 	VTANDET(ChnCCB, VTblPtr, AllocFlags);	// call code shared by FM and PSG to update
 											//   VoiceTable AND Envelope Trigger
-	FMVTBLCH6[0] |= 0x20;					// lock the voice from FM allocation [SET #5]
+	FMVTBLCH6[VTBLFLAGS] |= 0x20;			// lock the voice from FM allocation [SET #5]
 	
 	// at this point, C is note number - C4 >> B7 equals samples  0 through 47 (for back compatibil
 	//									 C0 >> B3 equals samples 48 through 96
@@ -2353,7 +2395,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 		SAMP.FIRST = 0;
 	if (SAMP.FIRST == 0)						// check for non-zero sample length
 	{
-		FMVTBLCH6[0] = 0xC6;					// empty sample - mark voice 6 free and releasing
+		FMVTBLCH6[VTBLFLAGS] = 0xC6;			// empty sample - mark voice 6 free and releasing
 		return;
 	}
 	
@@ -2383,7 +2425,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	YM2612_Write(0, 0x27);					// enable timer
 	YM2612_Write(1, Ch3ModeReg);
 	
-	FMWrite(1, 0xB6, 0xC0);					// enable ch6 output to both R and L
+	FMWrite(2, 0xB6, 0xC0);					// enable ch6 output to both R and L
 	
 	SmplPos = Read24Bit(Tbls.DTBL68K);		// pointer to sample table
 	SmplPos += Read24Bit(SAMP.PTR);			// 24-bit sample start offset, add em up to get ptr to sample start
@@ -2415,7 +2457,6 @@ static void noteonfm(UINT8 MidChn, UINT8* ChnCCB)
 	UINT8 VocNum;		// Register B
 	UINT8 CurBnk;		// Register D
 	
-	ChnPat = &CHPATPTR[2];
 	if (CHPATPTR[2] & 0x40)		// [BIT #6]
 	{
 		AllocFlags = ALLOCSPEC(ChnCCB, FMVTBLCH3, &VTblPtr);	// only CH3 will do for a CH3 mode patch
@@ -2430,8 +2471,13 @@ static void noteonfm(UINT8 MidChn, UINT8* ChnCCB)
 	if (AllocFlags == 0xFF)
 		return;				// return if unable to allocate a voice
 	
+#ifndef DUAL_SUPPORT
 	if (! (AllocFlags & 0x80))					// was it in use? [BIT #7]
 		FMWrite(0, 0x28, AllocFlags & 0x07);	// yes - do a keyoff
+#else
+	if (! (AllocFlags & 0x80))
+		FMWrite(CHIP_BNK(VTblPtr), 0x28, AllocFlags & 0x07);
+#endif
 	//noteonfm2:
 	VTANDET(ChnCCB, VTblPtr, AllocFlags);
 	
@@ -2460,7 +2506,12 @@ static void noteonfm(UINT8 MidChn, UINT8* ChnCCB)
 		CurBnk = 2;								// indicates bank 1 to FMWr
 	}
 	//fmbank0:
+#ifndef DUAL_SUPPORT
 	FMWrgl(0x22, ChnPat[0]);					// write lfo register
+#else
+	CurBnk |= CHIP_BNK(VTblPtr);
+	FMWrite(CurBnk & 0x04, 0x22, ChnPat[0]);
+#endif
 	
 	WRITEFM(ChnPat, CurBnk, VocNum);
 	
@@ -2473,6 +2524,7 @@ static void noteonfm(UINT8 MidChn, UINT8* ChnCCB)
 	else										// go set channel 3 frequency
 	{
 		//fmc3on:
+		CurBnk = 0x00;
 		FMWrite(CurBnk, 0xA6, ChnPat[28]);		// ch3 op1 msb
 		FMWrite(CurBnk, 0xA2, ChnPat[29]);		// ch3 op1 lsb
 		FMWrite(CurBnk, 0xAC, ChnPat[30]);		// ch3 op2 msb
@@ -2483,7 +2535,11 @@ static void noteonfm(UINT8 MidChn, UINT8* ChnCCB)
 		FMWrite(CurBnk, 0xAA, ChnPat[35]);		// ch3 op4 lsb
 	}
 	//fmkon:
-	FMWrite(CurBnk, 0x28, (ChnPat[36] << 4) | noteon.voice);
+#ifndef DUAL_SUPPORT
+	FMWrite(0x00, 0x28, (ChnPat[36] << 4) | noteon.voice);
+#else
+	FMWrite(CurBnk & 0x04, 0x28, (ChnPat[36] << 4) | noteon.voice);
+#endif
 	
 	return;
 }
@@ -2535,21 +2591,26 @@ static void VTANDET(UINT8* ChnCCB, UINT8* VTblPtr, UINT8 VFlags)
 	
 	VFlags &= 7;					// clear flags
 	noteon.voice = VFlags;			// save allocated voice
-	VTblPtr[0] = VFlags;
+	VTblPtr[VTBLFLAGS] = VFlags;
 	
 	TempVal = Read16Bit(&ChnCCB[CCBDURL]);
 	if (TempVal)					// if non-zero duration, set self-time flag
-		VTblPtr[0] |= 0x10;			// [SET #4]
+		VTblPtr[VTBLFLAGS] |= 0x10;	// [SET #4]
 	//noselftime:
 	if (ChnCCB[CCBFLAGS] & 0x08)	// sfx tempo based? [BIT #3]
-		VTblPtr[0] |= 0x08;			//  yes - set voice tbl sfx flag [SET #3]
+		VTblPtr[VTBLFLAGS] |= 0x08;	//  yes - set voice tbl sfx flag [SET #3]
 	//nosfxtempo:
-	VTblPtr[1] = ChnCCB[CCBPRIO];
-	VTblPtr[2] = noteon.note;		// store note and channel in table
-	VTblPtr[3] = noteon.ch;
-	VTblPtr[4] = ChnCCB[CCBDURL];
-	VTblPtr[5] = ChnCCB[CCBDURH];
-	VTblPtr[6] = 254;				// init release timer
+	VTblPtr[VTBLPRIO] = ChnCCB[CCBPRIO];
+	VTblPtr[VTBLNOTE] = noteon.note;	// store note and channel in table
+#ifndef DUAL_SUPPORT
+	VTblPtr[VTBLCH] = noteon.ch;
+#else
+	VTblPtr[VTBLCH] &= ~0x0F;			// keep higher 4 bit
+	VTblPtr[VTBLCH] |= noteon.ch;
+#endif
+	VTblPtr[VTBLDL] = ChnCCB[CCBDURL];
+	VTblPtr[VTBLDH] = ChnCCB[CCBDURH];
+	VTblPtr[VTBLRT] = 254;			// init release timer
 	
 	DACxME();
 	
@@ -2586,8 +2647,12 @@ static void NOTEOFF(UINT8 MidChn, UINT8 NoteNum)
 		}
 		else					//   no - get note number
 		{
+#ifndef DUAL_SUPPORT
 			VocFlags &= 7;
 			FMWrite(0, 0x28, VocFlags);	// key off
+#else
+			FMWrite((VocFlags & 0x08) >> 1, 0x28, VocFlags & 0x07);
+#endif
 		}
 		return;
 	}
@@ -2803,11 +2868,15 @@ static UINT8 DEALLOC(UINT8 MidChn, UINT8 Note, UINT8* VTblPtr)
 		//dvstart:
 		if (VTblPtr[VTBLFLAGS] & 0x80)	// if if free skip this voice [BIT #7]
 			continue;
-		if (VTblPtr[2] == Note && VTblPtr[VTBLCH] == MidChn)
+		if (VTblPtr[VTBLNOTE] == Note && VTblPtr[VTBLCH] == MidChn)
 		{
 			VFlags = VTblPtr[VTBLFLAGS];
 			if ((VFlags & 0x27) != 0x26)						// check for digital - locked and voice num=6
 				VTblPtr[VTBLFLAGS] = (VFlags & 0x27) | 0xC0;	// set free and release
+#ifdef DUAL_SUPPORT
+			VFlags &= ~0x08;
+			VFlags |= (VTblPtr[VTBLCH] & 0x80) >> 4;
+#endif
 			//deallocdig:
 			return VFlags;										// [return old VTblPtr[VTBLFLAGS]]
 		}
@@ -2899,23 +2968,23 @@ static void CheckForSongEnd(void)
 	SongAlmostEnd = 0x01;
 	
 	VTblPtr = FMVTBL;
-	for ( ; VTblPtr[0] != 0xFF; VTblPtr += 7)
+	for ( ; VTblPtr[VTBLFLAGS] != 0xFF; VTblPtr += 7)
 	{
-		if (VTblPtr[0] & 0x10)
+		if (VTblPtr[VTBLFLAGS] & 0x10)
 			ChnMask ++;
 	}
 	
 	VTblPtr = PSGVTBL;
-	for ( ; VTblPtr[0] != 0xFF; VTblPtr += 7)
+	for ( ; VTblPtr[VTBLFLAGS] != 0xFF; VTblPtr += 7)
 	{
-		if (! (VTblPtr[0] & 0x80))
+		if (! (VTblPtr[VTBLFLAGS] & 0x80))
 			ChnMask ++;
 	}
 	
 	VTblPtr = PSGVTBLNG;
-	for ( ; VTblPtr[0] != 0xFF; VTblPtr += 7)
+	for ( ; VTblPtr[VTBLFLAGS] != 0xFF; VTblPtr += 7)
 	{
-		if (! (VTblPtr[0] & 0x80))
+		if (! (VTblPtr[VTBLFLAGS] & 0x80))
 			ChnMask ++;
 	}
 	
