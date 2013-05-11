@@ -1,10 +1,9 @@
 // GEMS Player
 // -----------
-// ported from the GEMS 2.5 ASM source to C by Valley Bell
+// ported from the GEMS 2.0 ASM source to C by Valley Bell
 //
-// Note: The original port was based on GEMS 2.0 and was later updated to
-//       include v2.5 changes.
-//       There's also support for the GEMS 2.8 sequence pointer format.
+// Note: The ASM file included in the GEMS development kit compiles to 0x1676 bytes of Z80 code.
+//       The final GEMS driver used in most games has 0x1886 bytes and has probably a few less bugs.
 
 #include <memory.h>
 #include "stdtype.h"
@@ -60,24 +59,17 @@ static UINT8 seqcmd(UINT8* ChnCCB, UINT8* CHBUFPTR, UINT8 CurChn, UINT8 CmdByte)
 static void VTIMER(void);
 static void vtimerloop(UINT8 VoiceType, UINT8* VTblPtr);
 
-static UINT8 GETCCBPTR(UINT8** RetCCB);
-static UINT8* GETCCBPTR2(UINT8 Channel);
+static UINT8* PTOCCB(UINT8 Channel);
 void gems_init(void);
 void gems_loop(void);
-static void RESUMEALL(void);
 void STARTSEQ(UINT8 SeqNum);
-static void STOPSEQ(UINT8 SeqNum);
-static void PAUSESEQ(UINT8 SeqNum);
 static void CLIPALL(void);
-static void CLIPLOOP(UINT8* VTblPtr, UINT8 Mode);
 static void SETTEMPO(UINT8 BPM);
 static void TRIGENV(UINT8* ChnCCB, UINT8 MidChn, UINT8 EnvNum);
 static void DOENVELOPE(void);
-static void DOPITCHBEND(UINT8 CurChn);
+static void DOPITCHBEND(void);
 static void APPLYBEND(void);
-static UINT16 GETFREQ(UINT8 VType, UINT8 Channel, UINT8 Note, UINT8* PbPtr);
-static UINT8* GETPATPTR(UINT8 Channel);
-//static UINT16 MULTIPLY(UINT8 Val8, UINT16 Val16);
+static UINT16 GETFREQ(UINT8 VType, UINT8 Channel, UINT8 Note);
 static void NOTEON(UINT8 MidChn, UINT8 Note, UINT8* ChnCCB);
 static void noteonpsg(UINT8 MidChn, UINT8* ChnCCB, UINT8 Mode);
 static void noteondig(UINT8 MidChn, UINT8* ChnCCB);
@@ -110,9 +102,9 @@ static struct
 	UINT8 whdflg[4];		// [0031] 40 flags to indicate hardware should be updated
 } pdata;
 #pragma pack()
-//static UINT8 unused;				// [0035]
+//static UINT8 unused;			// [0035]
 static volatile UINT8 CMDWPTR;	// [0036] cmd fifo wptr @ $36
-static UINT8 CMDRPTR;				// [0037] read pointer @ $37
+static UINT8 CMDRPTR;			// [0037] read pointer @ $37
 static UINT8 NewCmdWPtr;
 
 enum
@@ -134,18 +126,11 @@ enum
 static UINT8 TICKFLG[2];	// [003E] (TICKFLG+1) set by VBLINT
 static UINT8 TICKCNT;		// [0040] tick accumulated by CHECKTICK
 
-//static UINT16 DACMEJRINST;	// [02B3] for saving the DACME inst for slow sample rates
-//static UINT16 DACME4BINST;	// [02B5] for saving the DACMEPROC inst for processing
-// [1. We need only one byte here to decide what to do.
-//  2. Both values are always constant (JR and an address from the code), so using defines works well here.]
-#define DACMEJRINST	0x18	// 0x18 = JR
-#define DACME4BINST	0x18	// 0x18 = JR
-
 // FILLDACFIFO Variables
-static UINT8 DACFIFOWPTR;	// [02FB]
-static UINT8 SAMPLEPTR[3];	// [02FC]
-static UINT16 SAMPLECTR;	// [02FF]
-static UINT8 FDFSTATE;		// [0301]
+static UINT8 DACFIFOWPTR;	// [02BC]
+static UINT8 SAMPLEPTR[3];	// [02BD]
+static UINT16 SAMPLECTR;	// [02C0]
+static UINT8 FDFSTATE;		// [02C2]
 
 /* CCB Entries:
 *		2,1,0	tag addr of 1st byte in 32-byte channel buffer
@@ -185,30 +170,30 @@ enum
 	CCBLOOP3	= 25,
 	CCBPRIO		= 28,	// priority (0 lowest, 127 highest)
 	CCBENV		= 29,	// envelope number
-	CCBATN		= 30,	// channel attenuation (0=loud, 127=quiet)
+	CCBx		= 30,
 	CCBy		= 31
 };
 
 // UPDSEQ Variables
-static UINT8* CHPATPTR;	// [0456] pointer to current channel's patch buffer
+static UINT8* CHPATPTR;		// [0411] pointer to current channel's patch buffer
 
 // main Variables
-static UINT16 SBPT;		// [08BE] sub beats per tick (8frac), default is 120bpm [default: 204]
-static UINT16 SBPTACC;		// [08C0] accumulates ^^ each tick to track sub beats
-static UINT8 TBASEFLAGS;	// [08C2]
+static UINT16 SBPT;			// [0808] sub beats per tick (8frac), default is 120bpm [default: 204]
+static UINT16 SBPTACC;		// [080A] accumulates ^^ each tick to track sub beats
+static UINT8 TBASEFLAGS;	// [080C]
 
 #pragma pack(1)
 struct
 {
-	UINT8 PTBL68K[3];		// [0AA5] 24-bit 68k space pointer to patch table
-	UINT8 ETBL68K[3];		// [0AA8] 24-bit 68k space pointer to envelope table
-	UINT8 STBL68K[3];		// [0AAB] 24-bit 68k space pointer to sequence table
-	UINT8 DTBL68K[3];		// [0AAE] 24-bit 68k space pointer to digital sample table
+	UINT8 PTBL68K[3];		// [09BC] 24-bit 68k space pointer to patch table
+	UINT8 ETBL68K[3];		// [09BF] 24-bit 68k space pointer to envelope table
+	UINT8 STBL68K[3];		// [09C2] 24-bit 68k space pointer to sequence table
+	UINT8 DTBL68K[3];		// [09C5] 24-bit 68k space pointer to digital sample table
 } Tbls;
 #pragma pack()
 
 // DOENVELOPE Variables
-static UINT8 ECB[29] =		// [0EAB]
+static UINT8 ECB[29] =		// [0D47]
 {	0x40, 0x40, 0x40, 0x40,	// 4 envelopes worth of control blocks (ECB's)
 	0xFF,
 	0x00, 0x00, 0x00, 0x00,
@@ -230,28 +215,27 @@ enum
 };
 
 // DOPITCHBEND Variables
-static UINT8 NEEDBEND;		// [0F75] set to 1 to trigger a need to bend
-static UINT8 PBTBL[16*5];	// [0F76]	// pitch bend LSB
+static UINT8 NEEDBEND;		// [0E0C] set to 1 to trigger a need to bend
+static UINT8 PBTBL[16*5];	// [0E0D]	// pitch bend LSB
 										// pitch bend MSB
 										// env bend LSB
 										// env bend MSB
-										// [0]=apply bend - set by pbend/mod,
-										// cleared by applybend
+										// [7] - retrigger; [6:0] - env num
 enum
 {
 	PBPBL		=  0,			// offset in PBTBL to 16 channels' pitchbend LSB
 	PBPBH		= 16,			// offset in PBTBL to 16 channels' pitchbend MSB
 	PBEBL		= 32,			// offset in PBTBL to 16 channels' envelopebend LSB
 	PBEBH		= 48,			// offset in PBTBL to 16 channels' envelopebend MSB
-	PBRETRIG	= 64,			// offset in PBTBL to 16 channels' retrigger flag
+	PBRETRIG	= 64,			// offset in PBTBL to 16 channels' retrigger env
 };
 
 // NOTEON Variables
 // fmftbl contains a 16 bit freq number for each half step in a single octave (C-C)
-static UINT16 fmftbl[13] =		// [1168]
+static UINT16 fmftbl[13] =	// [0FEB]
 	{644, 682, 723, 766, 811, 859, 910, 965, 1022, 1083, 1147, 1215, 1288};
 // psgftbl contains the 16 bit wavelength numbers for the notes A2 thru B7 (33-95)
-static UINT16 psgftbl[64] =	// [1182]
+static UINT16 psgftbl[64] =	// [1005]
 {	        0x03F9, 0x03C0, 0x038A,	// A2 > B2
 	
 	0x0357, 0x0327, 0x02FA, 0x02CF,	// C3 > B3
@@ -280,71 +264,56 @@ static UINT16 psgftbl[64] =	// [1182]
 #pragma pack(1)
 static struct
 {
-	UINT8 note;				// [1202] note on note (keep these together - stored as BC) [noteonnote]
-	UINT8 ch;				// [1203] note on channel [noteonch]
-	UINT8 voice;			// [1204] allocated voice [noteonvoice]
-	UINT8 atten;			// [1205] allocated voice [noteonatten]
+	UINT8 note;				// [1085] note on note (keep these together - stored as BC) [noteonnote]
+	UINT8 ch;				// [1086] note on channel [noteonch]
+	UINT8 voice;			// [1087] allocated voice [noteonvoice]
 } noteon;
 
 static struct
 {
 	// Note: XFER is used on these variables.
-	UINT8 FLAGS;			// [1421]
-	UINT8 PTR[3];			// [1422]
-	UINT16 SKIP;			// [1425]
-	UINT16 FIRST;			// [1427]
-	UINT16 LOOP;			// [1429]
-	UINT16 END;				// [142B]
+	UINT8 FLAGS;			// [125D]
+	UINT8 PTR[3];			// [125E]
+	UINT16 SKIP;			// [1261]
+	UINT16 FIRST;			// [1263]
+	UINT16 LOOP;			// [1265]
+	UINT16 END;				// [1267]
 } SAMP;
 #pragma pack()
-static UINT16 noteonffreq;	// [142D]
-
-static UINT8 CARRIERTBL[8] =	// [15C6] 
-{	0x08,	// alg 0, op 4 is carrier
-	0x08,	// alg 1, op 4 is carrier
-	0x08,	// alg 2, op 4 is carrier
-	0x08,	// alg 3, op 4 is carrier
-	0x0A,	// alg 4, op 2 and 4 are carriers
-	0x0E,	// alg 5, op 2 and 3 and 4 are carriers
-	0x0E,	// alg 6, op 2 and 3 and 4 are carriers
-	0x0F};	// alg 7, all ops carriers
-
-static UINT8 CARRIERS;		// [15CE] 
-
-static UINT8 MASTERATN;	// [15CF] master attenuation is 7 frac bits (0 = full volume)
+static UINT16 noteonffreq;	// [1268]
 
 // WRITEFM Variables
-static UINT8 FMADDRTBL[0x3D] =	// [161C]
-{	0xB0,   2,	// set feedback, algorithm
-	0xB4,   3,	// set output, ams, fms
-	0x30,   4,	// operator 1 - set detune, mult
-	0x40, 133,	//5+128		// set total level
-	0x50,   6,	// set rate scaling, attack rate
-	0x60,   7,	// set am enable, decay rate
-	0x70,   8,	// set sustain decay rate
-	0x80,   9,	// set sustain level, release rate
-	0x90,   0,	// set proprietary register
-	0x38,  16,	// operator 2 - set detune, mult
-	0x48, 145,	//17+128	// set total level
-	0x58,  18,	// set rate scaling, attack rate
-	0x68,  19,	// set am enable, decay rate
-	0x78,  20,	// set sustain decay rate
-	0x88,  21,	// set sustain level, release rate
-	0x98,   0,	// set proprietary register
-	0x34,  10,	// operator 3 - set detune, mult
-	0x44, 139,	//11+128	// set total level
-	0x54,  12,	// set rate scaling, attack rate
-	0x64,  13,	// set am enable, decay rate
-	0x74,  14,	// set sustain decay rate
-	0x84,  15,	// set sustain level, release rate
-	0x94,   0,	// set proprietary register
-	0x3C,  22,	// operator 4 - set detune, mult
-	0x4C, 151,	//23+128	// set total level
-	0x5C,  24,	// set rate scaling, attack rate
-	0x6C,  25,	// set am enable, decay rate
-	0x7C,  26,	// set sustain decay rate
-	0x8C,  27,	// set sustain level, release rate
-	0x9C,   0,	// set proprietary register
+static UINT8 FMADDRTBL[0x3D] =	// [1402]
+{	0xB0,  2,	// set feedback, algorithm
+	0xB4,  3,	// set output, ams, fms
+	0x30,  4,	// set detune, mult
+	0x40,  5,	// set total level
+	0x50,  6,	// set rate scaling, attack rate
+	0x60,  7,	// set am enable, decay rate
+	0x70,  8,	// set sustain decay rate
+	0x80,  9,	// set sustain level, release rate
+	0x90,  0,	// set proprietary register
+	0x34, 10,	// set detune, mult
+	0x44, 11,	// set total level
+	0x54, 12,	// set rate scaling, attack rate
+	0x64, 13,	// set am enable, decay rate
+	0x74, 14,	// set sustain decay rate
+	0x84, 15,	// set sustain level, release rate
+	0x94,  0,	// set proprietary register
+	0x38, 16,	// set detune, mult
+	0x48, 17,	// set total level
+	0x58, 18,	// set rate scaling, attack rate
+	0x68, 19,	// set am enable, decay rate
+	0x78, 20,	// set sustain decay rate
+	0x88, 21,	// set sustain level, release rate
+	0x98,  0,	// set proprietary register
+	0x3C, 22,	// set detune, mult
+	0x4C, 23,	// set total level
+	0x5C, 24,	// set rate scaling, attack rate
+	0x6C, 25,	// set am enable, decay rate
+	0x7C, 26,	// set sustain decay rate
+	0x8C, 27,	// set sustain level, release rate
+	0x9C,  0,	// set proprietary register
 	0x00};
 
 // Dynamic Voice Allocation
@@ -360,7 +329,7 @@ static UINT8 FMADDRTBL[0x3D] =	// [161C]
 *	byte 6: release timer */
 
 #ifndef DUAL_SUPPORT
-static UINT8 FMVTBL[43] =	// [1791]
+static UINT8 FMVTBL[43] =	// [1581]
 {	0x80, 0, 0x50, 0, 0, 0, 0,		// fm voice 0
 	0x81, 0, 0x50, 0, 0, 0, 0,		// fm voice 1
 	0x84, 0, 0x50, 0, 0, 0, 0,		// fm voice 3
@@ -371,7 +340,7 @@ static UINT8 FMVTBL[43] =	// [1791]
 static UINT8* FMVTBLCH6 = &FMVTBL[4*7];
 static UINT8* FMVTBLCH3 = &FMVTBL[5*7];
 #else
-static UINT8 FMVTBL[85] =		// [1791]
+static UINT8 FMVTBL[85] =	// [1581]
 {	0x80, 0, 0x50, 0, 0, 0, 0,		// fm voice 0
 	0x81, 0, 0x50, 0, 0, 0, 0,		// fm voice 1
 	0x84, 0, 0x50, 0, 0, 0, 0,		// fm voice 3
@@ -389,15 +358,15 @@ static UINT8* FMVTBLCH6 = &FMVTBL[10*7];
 static UINT8* FMVTBLCH3 = &FMVTBL[11*7];
 #endif
 
-static UINT8 PSGVTBL[22] =		// [17BC]
-{	0x80, 0, 0x50, 0, 0, 0, 0,	// normal type voice, number 0
-	0x81, 0, 0x50, 0, 0, 0, 0,	// normal type voice, number 1
-	0x82, 0, 0x50, 0, 0, 0, 0,	// [15BA, PSGVTBLTG3] normal type voice, number 2
+static UINT8 PSGVTBL[22] =	// [15AC]
+{	0x80, 0, 0x50, 0, 0, 0, 0,		// normal type voice, number 0
+	0x81, 0, 0x50, 0, 0, 0, 0,		// normal type voice, number 1
+	0x82, 0, 0x50, 0, 0, 0, 0,		// [15BA, PSGVTBLTG3] normal type voice, number 2
 	0xFF};
 static UINT8* PSGVTBLTG3 = &PSGVTBL[2*7];
 
-static UINT8 PSGVTBLNG[8] =	// [17D2]
-{	0x83, 0, 0x50, 0, 0, 0, 0,	// noise type voice, number 3
+static UINT8 PSGVTBLNG[8] =
+{	0x83, 0, 0x50, 0, 0, 0, 0,		// noise type voice, number 3
 	0xFF};
 
 enum
@@ -413,25 +382,20 @@ enum
 #define CHIP_BNK(x)	((x[VTBLCH] & 0x80) >> 5)
 
 
-#define CCHSIZE		256			// [channel cache size, in bytes - makes resizing CH0BUF easier]
-
 // DATA AREA
-static UINT8 PATCHDATA[39*16];	// [1886]
-static UINT8 MBOXES[32];		// [1B20] 32 bytes for mail boxes
-       UINT8 CMDFIFO[64];		// [1B40] command fifo - 64 bytes
-static UINT8 CCB[512];			// [1B80] CCB - 512 bytes
-static UINT8 CH0BUF[CCHSIZE];	// [1D80] channel cache - 256 bytes [Note: 512 bytes in v2.0]
-static UINT8 ENV0BUF[128];		// [1E80] envelope buffers - 128 bytes
-static UINT8 DACFIFO[256];		// [1F00] DAC data FIFO - 256 bytes
+static UINT8 PATCHDATA[39*16];	// [1676]
+static UINT8 MBOXES[32];		// [1A20] 32 bytes for mail boxes
+       UINT8 CMDFIFO[64];		// [1A40] command fifo - 64 bytes @ 1A40
+static UINT8 CCB[512];			// [1A80] CCB - 512 bytes @ 1A80
+static UINT8 CH0BUF[512];		// [1C80] channel cache - 512 bytes @ 1C80
+static UINT8 ENV0BUF[128];		// [1E80] envelope buffers - 128 bytes @ 1E80
+static UINT8 DACFIFO[256];		// [1F00] DAC data FIFO - 256 bytes @ 1F00
 
 
-static UINT8 DacMeEn;		// [02A3] is either RET (C9, disabled), EXX (D9, enabled) or JR (18, enable next time)
-static UINT8 DacMeProc;		// [02C4] is either NOP (00, disabled) or JR (18, enabled)
-static UINT8 DacMeRet;		// [02CF] is either RET (C9, normal) or NOP (00, extra delay)
+static UINT8 DacMeEn;		// [02A3] is either RET (C9, disabled) or EXX (D9, enabled)
 static UINT8 Ch3ModeReg;	// register B, used by DACME
-static UINT8 DacCtrlPat;	// register C, used by DACME
 static UINT8 DacFifoReg;	// register DE, used by DACME (D is always 1F)
-static UINT8 FillDacEn;		// [0302] is either RET (C9, disabled) or NOP (00, enabled)
+static UINT8 FillDacEn;		// [02C3] is either RET (C9, disabled) or NOP (00, enabled)
 
 static const UINT8* ROMData;
 static const UINT8* PData;
@@ -441,7 +405,6 @@ static const UINT8* DData;
 static const UINT8 NullData[0x10] =
 	{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 static UINT8 SongAlmostEnd;
-UINT8 Gems28Mode = 0x00;
 
 static __inline UINT16 Read16Bit(const UINT8* Data)
 {
@@ -732,9 +695,34 @@ static UINT8 GETCBYTE(void)
 //						HL	68k source address [15:0]
 //						DE	Z80 dest address
 //						C	byte count (0 is illegal!)
-//			[Note: I guess ByteCount == 0 behaves like 0x100 if this would cross a bank and like 0x00 else.]
+//			[Note: I guess ByteCount == 0 behaves like 0x100, if this would cross a bank and like 0x00 else.]
+/*static void XFER68K(UINT8* DstPtr, UINT32 SrcAddr, UINT8 BytCount)
+{
+	//UINT8 x68ksrclsb;	// [023B] for storing lsw of src addr
+	//UINT8 x68ksrcmid;	// [023C]
+	
+	// I can't be bothered to port this function, because it's large,
+	// compilated and seems to wait for the 68k to do something.
+	// So I'll just imitate its behaviour.
+	const UINT8* SrcPtr;
+	
+	DACxME();	// they put this call EVERYWHERE
+	
+	SrcPtr = &ROMData[SrcAddr];
+	while(BytCount)
+	{
+		*DstPtr = *SrcPtr;
+		SrcPtr ++;	DstPtr ++;
+		BytCount --;
+	}
+	
+	return;
+}*/
 static void XFER68K(UINT8* DstPtr, const UINT8* SrcData, UINT32 SrcAddr, UINT8 BytCount)
 {
+	//UINT8 x68ksrclsb;	// [023B] for storing lsw of src addr
+	//UINT8 x68ksrcmid;	// [023C]
+	
 	// I can't be bothered to port this function, because it's large,
 	// compilated and seems to wait for the 68k to do something.
 	// So I'll just imitate its behaviour.
@@ -759,27 +747,13 @@ static void XFER68K(UINT8* DstPtr, const UINT8* SrcData, UINT32 SrcAddr, UINT8 B
 
 /*************************************  DIGITAL STUFF  ************************************/
 
-// DACME - do that DAC thing. assumes the the alternate registers are set up as follows
-//
-//					B		15H (reset cmd to timer) + CH3 mode bits
-//					C		control pattern for processing (compression, oversampling)
-//					DE		pointing into DACFIFO (1F00-1FFF)
-//					HL		4000H
+// DACME - do that DAC thing.
 void DACME(void)
 {
 	UINT8 CurSmpl;
 	
-	if (DacMeEn == 0x18)		// JR DACMEALT
-	{
-		//DACMEALT:
-		// changes DACME back to working next time
-		DacMeEn = 0xD9;
+	if (DacMeEn == 0xC9)
 		return;
-	}
-	else if (DacMeEn == 0xC9)	// RET
-	{
-		return;
-	}
 	
 	// dacmepoint:
 	YM2612_Write(0, 0x27);			// 0x4000 = 0x27
@@ -794,46 +768,13 @@ void DACME(void)
 	
 	YM2612_Write(1, Ch3ModeReg);	// reset timer (sets CH3 mode bits)
 	
-	CurSmpl = DACFIFO[DacFifoReg];	// get next byte from fifo
-	
-	//DACMEPROC:
-	if (DacMeProc == 0x00)			// NOP
-	{
-		DacFifoReg ++;
-	}
-	else							// JR DACMEDSP
-	{
-		//DACMEDSP:
-		DacCtrlPat = (DacCtrlPat >> 1) | (DacCtrlPat << 7);		// which sample (high nibble or low) [RRC]
-		if (DacCtrlPat & 0x80)									// high
-		{
-			//DACME4BHI:			// here for hi nib - 2nd half - inc ptr
-			DacFifoReg ++;
-		}
-		else
-		{
-			CurSmpl <<= 4;			// here for low nibble - 1st half
-		}
-		//DACME4BMSK:
-		CurSmpl &= 0xF0;
-	}
-	
-	//DACMEOUT:
-	YM2612_Write(0, 0x2A);			// point FM chip at DAC data register
-	YM2612_Write(1, CurSmpl);		// output sample
-	
-	//DACMERET:
-	// change to ZNOP for DACME's every other call
-	// for (slow sample rates)
-	if (DacMeRet == 0x00)
-	{
-		// changes DACME to jump to DACMEALT next time
-		DacMeEn = DACMEJRINST;
-	}
+	CurSmpl = DACFIFO[DacFifoReg];
+	YM2612_Write(0, 0x2A);
+	YM2612_Write(1, CurSmpl);
+	DacFifoReg ++;
 	
 	return;
 }
-
 
 // FILLDACFIFO - gets the next 128 bytes of sample from the 68000 into the DACFIFO
 static void FILLDACFIFO(UINT8 ForceFill)
@@ -854,10 +795,7 @@ static void FILLDACFIFO(UINT8 ForceFill)
 		if (! FillVal)
 			return;
 	}
-	
 	// FORCEFILLDF: [save AF]
-	CHECKTICK();
-	
 	// FDFneeded:
 	DACxME();
 	
@@ -949,8 +887,6 @@ static void FILLDACFIFO(UINT8 ForceFill)
 /************************************ SEQUENCER CODE **************************************/
 
 // GETSBYTE - get the channel's sequence byte pointed to by the CCB
-//#define BUFSIZE		16	// [actually commented out in the code, but it's nice to use]
-#define BUFSIZE		(CCHSIZE / 16)	// [this is even better]
 static UINT8 GETSBYTE(UINT8* ChnCCB, UINT8* CHBUFPTR)
 {
 	UINT32 CcbAddr;
@@ -964,16 +900,15 @@ static UINT8 GETSBYTE(UINT8* ChnCCB, UINT8* CHBUFPTR)
 	CcbAddr = Read24Bit(&ChnCCB[CCBADDRL]);
 	CcbTag = Read24Bit(&ChnCCB[CCBTAGL]);
 	AddrDiff = CcbAddr - CcbTag;
-	if (AddrDiff >= BUFSIZE)	// NOT (if mid and msb ok, is lsb < 16?)
+	if (AddrDiff >= 32)	// NOT (if mid and msb ok, is lsb < 32?)
 	{
 		//gsbmiss:
 		DACxME();
-		CHECKTICK();
 		
 		// here to refill buffer w/ next 32 bytes in seq
 		CcbTag = CcbAddr;
 		Write24Bit(&ChnCCB[CCBTAGL], CcbTag);
-		XFER68K(CHBUFPTR, SData, CcbTag, BUFSIZE);	// refill away
+		XFER68K(CHBUFPTR, SData, CcbTag, 32);	// refill away
 		AddrDiff = 0x00;
 		// and hit on first byte (since we just refilled here)
 		//jr gsbhit
@@ -995,7 +930,7 @@ static UINT8 GETSBYTE(UINT8* ChnCCB, UINT8* CHBUFPTR)
 // UPDSEQ - go through the CCB's, updating any enabled channels
 static void UPDSEQ(void)
 {
-	UINT8* CHBUFPTR;	// [0454] pointer to current channel's sequence buffer
+	UINT8* CHBUFPTR;	// [040F] pointer to current channel's sequence buffer
 	UINT8* ChnCCB;
 	UINT8 CurChn;
 	UINT8 TestRes;
@@ -1018,7 +953,6 @@ static void UPDSEQ(void)
 			{
 				//updseqdoit:
 				DACxME();
-				FILLDACFIFO(0x00);
 				SEQUENCER(ChnCCB, CHBUFPTR, CurChn);
 			}
 		}
@@ -1029,7 +963,7 @@ static void UPDSEQ(void)
 		//updseqloop: [actually placed before updseqloop1]
 		DACxME();
 		ChnCCB += 32;	// go to next CCB
-		CHBUFPTR += BUFSIZE;
+		CHBUFPTR += 32;
 		CHPATPTR += 39;
 	}
 	
@@ -1293,7 +1227,6 @@ static UINT8 seqcmd(UINT8* ChnCCB, UINT8* CHBUFPTR, UINT8 CurChn, UINT8 CmdByte)
 			
 			PbTblPtr[PBPBL] = GETSBYTE(ChnCCB, CHBUFPTR);	// 16 bit signed pitch bend (8 frac bits, semitones)
 			PbTblPtr[PBPBH] = GETSBYTE(ChnCCB, CHBUFPTR);
-			PbTblPtr[PBRETRIG] |= 0x01;						// [SET #0]
 			NEEDBEND = 1;
 		}
 		return 0x01;	// [jp seqdelay]
@@ -1306,7 +1239,9 @@ static UINT8 seqcmd(UINT8* ChnCCB, UINT8* CHBUFPTR, UINT8 CurChn, UINT8 CmdByte)
 		CurArg = GETSBYTE(ChnCCB, CHBUFPTR);
 		if (CHPATPTR[0] == 1)			// is this a digital patch?
 			CHPATPTR[1] = CurArg;		// yes - update sample rate value
-		//else ;						// no - no effect [jp seqdelay]
+		else
+			//return 0x80;				// no - no effect [ret]
+			return 0x01;				// [that above is actually a bug fixed in GEMS 2.5]
 		return 0x01;	// [jp seqdelay]
 	case 111:	// 111 = goto
 		//seqgoto:
@@ -1387,45 +1322,42 @@ static UINT8 seqcmd(UINT8* ChnCCB, UINT8* CHBUFPTR, UINT8 CurChn, UINT8 CmdByte)
 			}
 		}
 		return 0x00;	// [jp seqcmdloop0]
-	case 114:	// 114 = seekrit codes [Is this supposed to be "secret codes"?]
+	case 114:	// [114 = special stuff, not part of the disassembly]
+		CmdByte = GETSBYTE(ChnCCB, CHBUFPTR);
+		CurArg = GETSBYTE(ChnCCB, CHBUFPTR);
 		{
-			UINT8 CurCode;	// Register D
-			UINT8 CurVal;	// Register E
+			const char* CmdDesc;
 			
-			CurCode = GETSBYTE(ChnCCB, CHBUFPTR);	// get code
-			CurVal = GETSBYTE(ChnCCB, CHBUFPTR);	// get value
-			switch(CurCode)						// dispatch on code
+			switch(CmdByte)
 			{
-			case 4:
-				//seqatten:
-				MASTERATN = CurVal;
-				return 0x01;	// [jp seqdelay]
-			case 5:
-				//seqchatten:
-				ChnCCB[CCBATN] = CurVal;
-				return 0x01;	// [jp seqdelay]
-			case 0:
-				//seqstopseq:
-				STOPSEQ(CurVal);
-				return 0x01;	// [jp seqdelay]
-			case 1:
-				//seqpauseseq:
-				//seqpausecom:
-				PAUSESEQ(CurVal);
-				return 0x01;	// [jp seqdelay]
-			case 3:
-				//seqpauselmusic:
-				CurVal = MBOXES[2];
-				//seqpausecom:
-				PAUSESEQ(CurVal);
-				return 0x01;	// [jp seqdelay]
-			case 2:
-				//seqresume:
-				RESUMEALL();
-				return 0x01;	// [jp seqdelay]
-			default:
-				printf("Invalid special command %u found on Channel %u!\n", CurCode, CurChn);
+			case 0x00:	// Stop Sequence
+				CmdDesc = "Stop Sequence";
 				break;
+			case 0x01:	// Pause Sequence
+				CmdDesc = "Pause Sequence";
+				break;
+			case 0x02:	// Resume Music
+				CmdDesc = "Resume Music";
+				break;
+			case 0x03:	// Pause Music
+				CmdDesc = "Pause Music";
+				break;
+			case 0x04:	// Set Master Volume
+				CmdDesc = "Master Volume";
+				break;
+			case 0x05:	// Set Channel Volume
+				CmdDesc = "Channel Volume";
+				break;
+			default:
+				break;
+			}
+			
+			if (CmdByte != 0x05)
+			{
+				if (CmdDesc == NULL)
+					printf("Channel %u uses (ignored) special command %u\n", CurChn, CmdByte);
+				else
+					printf("Channel %u uses (ignored) special command %u (%s)\n", CurChn, CmdByte, CmdDesc);
 			}
 		}
 		return 0x01;	// [jp seqdelay]
@@ -1525,20 +1457,7 @@ static void vtimerloop(UINT8 VoiceType, UINT8* VTblPtr)
 
 /*************************************  MAIN LOOP  ****************************************/
 
-// GETCCBPTR - gets one byte from command queue for channel number, multiplies by 32,
-//		and returns pointer to that channel's CCB in IX, as well as the channel #
-//		in A
-// GETCCBPTR2 - alternate entry point to providing channel # in A (skips GETCBYTE)
-static UINT8 GETCCBPTR(UINT8** RetCCB)
-{
-	UINT8 CurChn;
-	
-	CurChn = GETCBYTE();
-	*RetCCB = GETCCBPTR2(CurChn);
-	return CurChn;
-}
-
-static UINT8* GETCCBPTR2(UINT8 Channel)
+static UINT8* PTOCCB(UINT8 Channel)
 {
 	return &CCB[Channel * 32];
 }
@@ -1551,8 +1470,7 @@ void gems_init(void)
 	SBPTACC = 0;
 	TBASEFLAGS = 0;
 	
-	DacMeEn = 0x18;
-	DacMeProc = 0x18;
+	DacMeEn = 0xC9;
 	FillDacEn = 0xC9;
 	
 	memset(pdata.psglev, 0xFF, 0x04);
@@ -1570,11 +1488,6 @@ void gems_init(void)
 	for (CurIns = 0; CurIns < 16; CurIns ++)
 		//pinitloop:
 		PATCHDATA[CurIns * 39] = 0xFF;
-	
-	//DACMEJRINST = DacMeEn;	// save the jr in DACME to slow sample rate mode
-	//DACME4BINST = DacMeProc;	// save the jr for enabling processing
-	
-	DacMeEn = 0xC9;				// opcode "RET" and disable for now
 	
 	SongAlmostEnd = 0x01;
 	
@@ -1595,8 +1508,6 @@ void gems_loop(void)
 	UINT8 CurChn;
 	UINT8 CurNote;
 	
-	CHECKTICK();
-	
 	DACxME();
 	
 	FILLDACFIFO(0x00);
@@ -1611,7 +1522,6 @@ void gems_loop(void)
 	{
 		TICKCNT --;		// a tick's gone by...
 		DOPSGENV();		//   do PSG envs and set tick flag
-		CHECKTICK();
 		TickID = 1;		//   set tick flag
 	}
 	//noticks:
@@ -1627,15 +1537,11 @@ void gems_loop(void)
 	{
 		TBASEFLAGS = TickID;
 		DOENVELOPE();		// call the envelope processor
-		CHECKTICK();
 		VTIMER();			// update voice timers
-		CHECKTICK();
 		UPDSEQ();			// update sequencers
-		CHECKTICK();
 	}
 	//neithertick:
 	APPLYBEND();			// check if bends need applying
-	
 	if (CMDWPTR == CMDRPTR)	// check for command bytes... compare read and write pointers
 		return;				// loop if no command bytes waiting [jp loop]
 	
@@ -1650,8 +1556,10 @@ void gems_loop(void)
 	{
 	case 0:		// note on?
 		//cmdnoteon:
-		CurChn = GETCCBPTR(&ChnPtr);		// GETCBYTE for channel, IX <- CCB ptr, A <- channel
-		CHPATPTR = GETPATPTR(CurChn);		// set pointer to this channel's patch buffer
+		CurChn = GETCBYTE();				// channel
+		CHPATPTR = &PATCHDATA[CurChn * 39];	// set pointer to this channel's patch buffer
+		
+		ChnPtr = PTOCCB(CurChn);			// pointer to this channel's CCB
 		
 		CurNote = GETCBYTE();				// note
 		NOTEON(CurChn, CurNote, ChnPtr);
@@ -1673,28 +1581,8 @@ void gems_loop(void)
 		return;
 	case 4:
 		//cmdpbend:
-		CurChn = GETCBYTE();	// get midi channel
-		DOPITCHBEND(CurChn);	// PITCHBEND gets its own data from the cmd queue [outdated comment]
+		DOPITCHBEND();		// PITCHBEND gets its own data from the cmd queue
 		return;
-	case 30:
-		//cmdpbendvch:
-		CurIdx = GETCBYTE();				// seq #
-		CmdByte = GETCBYTE();				// midi ch #
-		ChnPtr = CCB;						// gems ch # [0] (CCB num)
-		for (CurChn = 0; CurChn < 16; CurChn ++, ChnPtr += 32)
-		{
-			//pbvchloop:
-			if (! (ChnPtr[CCBFLAGS] & 0x01))	// is this channel in use? [BIT #0]
-				continue;						// no - skip it
-			if (ChnPtr[CCBSNUM] != CurIdx)		// yes - is it for this seq number?
-				continue;
-			if (ChnPtr[CCBVCHAN] != CmdByte)	// yes - for this channel ?
-				continue;
-			DOPITCHBEND(CurChn);				// yes - bend this channel
-		}
-		GETCBYTE();
-		GETCBYTE();
-		break;
 	case 5:
 		//cmdtempo:
 		CurIdx = GETCBYTE();
@@ -1702,7 +1590,8 @@ void gems_loop(void)
 		return;
 	case 6:
 		//cmdenv:
-		CurChn = GETCCBPTR(&ChnPtr);		// GETCBYTE for channel, IX <- CCB ptr, A <- channel
+		CurChn = GETCBYTE();				// channel
+		ChnPtr = PTOCCB(CurChn);			// pointer to CCB
 		CurIdx = GETCBYTE();				// envelope number
 		ChnPtr[CCBENV] = CurIdx;			// store new env number
 		if (! (ChnPtr[CCBFLAGS] & 0x40))	// retrigger mode?
@@ -1710,7 +1599,8 @@ void gems_loop(void)
 		return;
 	case 7:
 		//cmdretrig:
-		CurChn = GETCCBPTR(&ChnPtr);	// GETCBYTE for channel, IX <- CCB ptr, A <- channel
+		CurChn = GETCBYTE();			// channel
+		ChnPtr = PTOCCB(CurChn);		// pointer to CCB
 		CmdByte = GETCBYTE();			// 80h for retrigg, 0 for immediate
 		if (CmdByte)					// set retrigger?
 			ChnPtr[CCBFLAGS] |= 0x40;	// [SET #6]
@@ -1725,8 +1615,24 @@ void gems_loop(void)
 		return;
 	case 18:
 		//cmdstopseq:
-		CurIdx = GETCBYTE();			// get sequencer number to stop
-		STOPSEQ(CurIdx);
+		CurIdx = GETCBYTE();					// get sequencer number to stop
+		ChnPtr = CCB;
+		for (CurChn = 0; CurChn < 16; CurChn ++, ChnPtr += 32)	// only 16 CCB's to try
+		{
+			//stopseqloop:
+			if (! (ChnPtr[CCBFLAGS] & 0x01))	// is this channel in use? [BIT #0]
+				continue;						// no - skip it
+			if (ChnPtr[CCBFLAGS] & 0x20)		// is this channel in locked? [BIT #5]
+				continue;						// yes - skip it
+			if (ChnPtr[CCBSNUM] == CurIdx)		// yes - is it for this seq number?
+			{
+				ChnPtr[CCBFLAGS] = 0;			// yes - make it free, no retrig, no sustain
+				ChnPtr[CCBDURL] = 0;			// clear duration to enable live play
+				ChnPtr[CCBDURH] = 0;
+			}
+			//stopseqskip:
+		}
+		CheckForSongEnd();	// [not in actual code]
 		return;
 	case 11:
 		//cmdgetptrs:
@@ -1735,21 +1641,32 @@ void gems_loop(void)
 		return;
 	case 12:
 		//cmdpause:			// pause all CCB's current running
+		CLIPALL();
 		ChnPtr = CCB;
 		for (CurChn = 0; CurChn < 16; CurChn ++, ChnPtr += 32)	// only 16 CCB's to try
 		{
-			//cmdpsloop:				// go through CCB's
-			ChnPtr[CCBFLAGS] &= ~0x10;	// shut off running flags [RES #4]
+			//cmdpsloop:						// go through CCB's
+			ChnPtr[CCBFLAGS] &= ~0x10;			// shut off running flags [RES #4]
 		}
-		CLIPALL();
 		return;
 	case 13:
-		//cmdresume:
-		RESUMEALL();
+		//cmdresume:		// resume all enabled CCB's
+		ChnPtr = CCB;
+		for (CurChn = 0; CurChn < 16; CurChn ++, ChnPtr += 32)	// only 16 CCB's to try
+		{
+			//cmdresloop:
+			if (ChnPtr[CCBFLAGS] & 0x20)		// locked? then dont resume [BIT #5]
+				continue;
+			if (! (ChnPtr[CCBFLAGS] & 0x01))
+				continue;
+			ChnPtr[CCBFLAGS] |= 0x10;			// set any enabled CCB's running again [SET #4]
+			//cmdresnext:
+		}
 		return;
 	case 14:
 		//cmdsussw:			// set sustain flag for this channel
-		CurChn = GETCCBPTR(&ChnPtr);	// GETCBYTE for channel, IX <- CCB ptr, A <- channel
+		CurChn = GETCBYTE();
+		ChnPtr = PTOCCB(CurChn);
 		CmdByte = GETCBYTE();
 		if (CmdByte)					// switch on?
 			ChnPtr[CCBFLAGS] |= 0x80;	// yes [SET #7]
@@ -1759,11 +1676,13 @@ void gems_loop(void)
 		return;
 	case 20:
 		//cmdsetprio:
-		CurChn = GETCCBPTR(&ChnPtr);	// GETCBYTE for channel, IX <- CCB ptr, A <- channel
+		CurChn = GETCBYTE();
+		ChnPtr = PTOCCB(CurChn);		// ptr to CCB
 		ChnPtr[CCBPRIO] = GETCBYTE();	// set priority for this channel
 		return;
 	case 22:
 		//cmdstopall:
+		CLIPALL();					// chop off all notes
 		ChnPtr = CCB;				// start with CCB 0
 		for (CurChn = 0; CurChn < 16; CurChn ++, ChnPtr += 32)	// only 16 CCB's to try
 		{
@@ -1772,7 +1691,6 @@ void gems_loop(void)
 			ChnPtr[CCBDURL] = 0;	// clear duration to enable live play
 			ChnPtr[CCBDURH] = 0;
 		}
-		CLIPALL();					// chop off all notes
 		return;
 	case 23:
 		//cmdmute:
@@ -1800,14 +1718,12 @@ void gems_loop(void)
 		return;
 	case 26:
 		//cmdsamprate:
-		CurChn = GETCBYTE();			// channel
-		ChnPtr = GETPATPTR(CurChn);		// PATCHDATA + 39 * A
-		
-		CurIdx = GETCBYTE();			// new rate value
-		
-		if (ChnPtr[0] != 1)				// is this a digital patch?
-			return;					// no - no effect
-		ChnPtr[1] = CurIdx;				// yes - update sample rate value
+		CurChn = GETCBYTE();	// channel
+		ChnPtr = &PATCHDATA[CurChn * 39];
+		CurIdx = GETCBYTE();	// new rate value
+		if (ChnPtr[0] != 1)		// is this a digital patch?
+			return;			// no - no effect
+		ChnPtr[1] = CurIdx;		// yes - update sample rate value
 		return;
 	case 27:
 		//cmdstore:
@@ -1816,45 +1732,17 @@ void gems_loop(void)
 		return;
 	case 28:
 		//cmdlockch:
-		CurChn = GETCCBPTR(&ChnPtr);	// GETCBYTE for channel, IX <- CCB ptr, A <- channel
-		ChnPtr[CCBFLAGS] |= 0x20;		// [SET #5]
+		CurChn = GETCBYTE();
+		ChnPtr = PTOCCB(CurChn);
+		ChnPtr[CCBFLAGS] |= 0x20;	// [SET #5]
 		return;
 	case 29:
 		//cmdunlockch:
-		CurChn = GETCCBPTR(&ChnPtr);	// GETCBYTE for channel, IX <- CCB ptr, A <- channel
-		ChnPtr[CCBFLAGS] &= ~0x20;		// [RES #5]
+		CurChn = GETCBYTE();
+		ChnPtr = PTOCCB(CurChn);
+		ChnPtr[CCBFLAGS] &= ~0x20;	// [RES #5]
 		return;
-	
-	case 31:
-		//cmdvolume:
-		CurChn = GETCCBPTR(&ChnPtr);	// GETCBYTE for channel, IX <- CCB ptr, A <- channel
-		ChnPtr[CCBATN] = GETCBYTE();	// get attenuation value
-		break;
-	case 32:
-		//cmdmasteratn:
-		MASTERATN = GETCBYTE();
-		break;
 	}
-	return;
-}
-
-static void RESUMEALL(void)	// resume all enabled CCB's
-{
-	UINT8 CurChn;
-	UINT8* ChnPtr;	// Register IX
-	
-	ChnPtr = CCB;
-	for (CurChn = 0; CurChn < 16; CurChn ++, ChnPtr += 32)	// only 16 CCB's to try
-	{
-		//cmdresloop:
-		if (ChnPtr[CCBFLAGS] & 0x20)		// locked? then dont resume [BIT #5]
-			continue;
-		if (! (ChnPtr[CCBFLAGS] & 0x01))
-			continue;
-		ChnPtr[CCBFLAGS] |= 0x10;			// set any enabled CCB's running again [SET #4]
-		//cmdresnext:
-	}
-	
 	return;
 }
 
@@ -1862,16 +1750,15 @@ static void RESUMEALL(void)	// resume all enabled CCB's
 //   in the sequence.
 void STARTSEQ(UINT8 SeqNum)
 {
-	UINT8 stseqx[49];	// [0BBD] 33 byte scratch area for starting a sequence
-	UINT8 stseqsnum;	// [0BDE]
+	UINT8 stseqx[33];	// [0ACE] 33 byte scratch area for starting a sequence
+	UINT8 stseqsnum;	// [0AEF]
 	UINT32 STblPtr;
 	UINT32 SeqPtr;
 	UINT8* ChnCCB;		// register IX
-	UINT8* ChnPB;		// register IY
 	UINT8* StSqBuf;		// register HL
 	UINT8 CurChn;		// register B (but counting up)
 	UINT8 VirtChn;
-	UINT8 DoGems28;
+	UINT8 CurECB;
 	
 	StartSignal(SeqNum);
 	SBPTACC = 0;		// [note in actual code] reset current tempo ticks to prevent bugs
@@ -1882,7 +1769,7 @@ void STARTSEQ(UINT8 SeqNum)
 	XFER68K(stseqx, SData, SeqPtr, 2);		// read 2 byte offset, into... scratch
 	
 	SeqPtr = STblPtr + Read16Bit(stseqx);	// AHL <- pointer to seq hdr data
-	XFER68K(stseqx, SData, SeqPtr, 49);		// xfer the max 33 byte seq hdr into scratch
+	XFER68K(stseqx, SData, SeqPtr, 33);		// xfer the max 33 byte seq hdr into scratch
 	
 	// *** this should probably be something different!
 	if (! stseqx[0])
@@ -1891,35 +1778,19 @@ void STARTSEQ(UINT8 SeqNum)
 		return;	// return if empty sequence
 	}
 	
-	DoGems28 = Gems28Mode;
-	if (stseqx[0] > 1)		// [extra code to detect GEMS 2.8]
-	{
-		if (stseqx[3] <= 1 && stseqx[6] <= 1)
-			DoGems28 = 0x01;
-	}
-	
 	ChnCCB = CCB;			// start with CCB 0
-	ChnPB = PBTBL;
 	StSqBuf = &stseqx[1];	// track pointers start at stseqx+1
 	VirtChn = 0;			// C <- channel count
-	for (CurChn = 0; CurChn < 16; CurChn ++, ChnCCB += 32, ChnPB ++)	// only 16 CCB's to try
+	for (CurChn = 0; CurChn < 16; CurChn ++, ChnCCB += 32)	// only 16 CCB's to try
 	{
 		//chkstseqloop:
 		if (ChnCCB[CCBFLAGS] & 0x21)	// check in use and locked flags
 			continue;					// if either set, skip ch
 		ChnCCB[CCBFLAGS] = 0x11;		// yes - set enable and running bits
 		
-		if (! DoGems28)
-		{
-			SeqPtr = STblPtr + Read16Bit(StSqBuf);	// addr of this track is 24 bit base pointer, plus 16 bit offset in descriptor
-			StSqBuf += 2;
-		}
-		else
-		{
-			SeqPtr = STblPtr + Read24Bit(StSqBuf);	// addr of this track is 24 bit base pointer, plus 24 bit offset in descriptor
-			StSqBuf += 3;							// so, (IX+CCBADDR[H,M,L]) = (STBL68K[23:0]) + (HL[23:0])
-		}
-		Write24Bit(&ChnCCB[CCBADDRL], SeqPtr);
+		SeqPtr = STblPtr + Read16Bit(StSqBuf);	// addr of this track is 24 bit base pointer
+		StSqBuf += 2;
+		Write24Bit(&ChnCCB[CCBADDRL], SeqPtr);	// plus 16 bit offset in descriptor
 		
 		ChnCCB[CCBTAGL] = 0xFF;			// invalidate tags
 		ChnCCB[CCBTAGM] = 0xFF;
@@ -1934,11 +1805,20 @@ void STARTSEQ(UINT8 SeqNum)
 		ChnCCB[CCBLOOP3] = 0x00;
 		ChnCCB[CCBENV] = 0x00;			// clear envelope
 		ChnCCB[CCBPRIO] = 0x00;
-		ChnCCB[CCBATN] = 0x00;			// clear channel attenuation
-		ChnPB[PBPBL] = 0x00;			// clear pitchbend, envelope bend
-		ChnPB[PBPBH] = 0x00;
-		ChnPB[PBEBL] = 0x00;
-		ChnPB[PBEBH] = 0x00;
+		
+		// [not in actual code] reset pitch bend stuff and envelopes
+		PBTBL[PBPBL + CurChn] = 0x00;
+		PBTBL[PBPBH + CurChn] = 0x00;
+		PBTBL[PBEBL + CurChn] = 0x00;
+		PBTBL[PBEBH + CurChn] = 0x00;
+		PBTBL[PBRETRIG + CurChn] = 0x00;
+		PBTBL[PBRETRIG + CurChn] = 0x00;
+		for (CurECB = 0; ECB[ECBCHAN + CurECB] < 0x80; CurECB ++)
+		{
+			if ((ECB[ECBCHAN + CurECB] & 0xCF) == CurChn)
+				ECB[ECBCHAN + CurECB] = 0x40;	// set free
+		}
+		// [not in actual code end]
 		
 		VirtChn ++;
 		if (VirtChn >= stseqx[0])
@@ -1949,68 +1829,12 @@ void STARTSEQ(UINT8 SeqNum)
 	return;
 }
 
-// STOPSEQ - stops a multi channel sequence (actually, all occurances of it)
-static void STOPSEQ(UINT8 SeqNum)
-{
-	UINT8 CurChn;
-	UINT8* ChnPtr;	// Register IX
-	
-	ChnPtr = CCB;
-	for (CurChn = 0; CurChn < 16; CurChn ++, ChnPtr += 32)	// only 16 CCB's to try
-	{
-		//stopseqloop:
-		if (! (ChnPtr[CCBFLAGS] & 0x01))	// is this channel in use? [BIT #0]
-			continue;						// no - skip it
-		if (ChnPtr[CCBFLAGS] & 0x20)		// is this channel in locked? [BIT #5]
-			continue;						// yes - skip it
-		if (SeqNum == 255 ||				// stop song 255 means stop all
-			ChnPtr[CCBSNUM] == SeqNum)		// yes - is it for this seq number?
-		{
-			//stopseqstopit:
-			ChnPtr[CCBFLAGS] = 0;			// yes - make it free, no retrig, no sustain
-			ChnPtr[CCBDURL] = 0;			// clear duration to enable live play
-			ChnPtr[CCBDURH] = 0;
-		}
-		//stopseqskip:
-	}
-	CLIPALL();
-	CheckForSongEnd();	// [not in actual code]
-	
-	return;
-}
-
-// PAUSESEQ - pause a multi channel sequence (actually, all occurances of it)
-static void PAUSESEQ(UINT8 SeqNum)
-{
-	UINT8 CurChn;
-	UINT8* ChnPtr;	// Register IX
-	
-	ChnPtr = CCB;
-	for (CurChn = 0; CurChn < 16; CurChn ++, ChnPtr += 32)	// only 16 CCB's to try
-	{
-		//pauseseqloop:
-		if (! (ChnPtr[CCBFLAGS] & 0x01))	// is this channel in use? [BIT #0]
-			continue;						// no - skip it
-		if (ChnPtr[CCBFLAGS] & 0x20)		// is this channel in locked? [BIT #5]
-			continue;						// yes - skip it
-		if (ChnPtr[CCBSNUM] == SeqNum)		// yes - is it for this seq number?
-			ChnPtr[CCBFLAGS] &= ~0x10;		// shut off running flags [RES #4]
-		//pauseseqskip:
-	}
-	CLIPALL();
-	
-	return;
-}
-
 // CLIPALL - called by STOPALL and PAUSEALL - cancels all envelopes, voices
-//
-//		scans voice tables, clipping off notes from inactive (not running channels)
 static void CLIPALL(void)
 {
-// TODO: Re-port that function
 	UINT8* VTPtr;	// Register IX
 	UINT8* PRTbl;	// PSG Register Table Pointer, Register IY
-	UINT8 CLIPVNUM;	// [0CF8]
+	UINT8 CLIPVNUM;	// [0B95]
 	UINT8 VFlags;	// Register A
 	UINT8 CurBank;	// Register D
 	
@@ -2088,12 +1912,6 @@ static void CLIPALL(void)
 	return;
 }
 
-// IX <- voice table, E <- 0 for fm, 1 for psg
-static void CLIPLOOP(UINT8* VTblPtr, UINT8 Mode)
-{
-	return;
-}
-
 // SETTEMPO - sets the (1/24 beat) / (1/60 sec) ratio in SBPT (Sub Beat Per Tick)
 //		SBPT is 16 bits, 8 of em fractional
 static void SETTEMPO(UINT8 BPM)
@@ -2117,10 +1935,10 @@ static void TRIGENV(UINT8* ChnCCB, UINT8 MidChn, UINT8 EnvNum)
 	UINT8* EcbPtr;
 	UINT32 EnvOfs;
 	UINT8 EcbBufIdx;
-	UINT8 fpoffset[2];	// [1726], shared with FETCHPATCH
+	UINT8 fpoffset[2];	// [150C], shared with FETCHPATCH
 	UINT16 fpoffset_s;
 	
-	PBEnv = &PBTBL[MidChn];
+	PBEnv = PBTBL + MidChn;
 	EcbPtr = ECB;	// point at the envelope control blocks
 	while(1)
 	{
@@ -2249,7 +2067,6 @@ static void DOENVELOPE(void)
 					//jr envneedupd
 				}
 				//envneedupd:
-				CurPB[PBRETRIG] |= 0x01;	// [SET #0]
 				NEEDBEND = 1;
 				//jr envnext
 			}
@@ -2261,18 +2078,16 @@ static void DOENVELOPE(void)
 	return;
 }
 
-// DOPITCHBEND- updates the (pitchbend) value for the gems channel (= MIDI channel during perf [another cut comment]
-//
-//		inputs:		A							CCB number (0-15)
-//					(next 2 bytes in cmd queue)	pbend value
-static void DOPITCHBEND(UINT8 CurChn)
+// DOPITCHBEND- updates the (pitchbend) value for the midi channel
+static void DOPITCHBEND(void)
 {
+	UINT8 CurChn;
 	UINT8* PBEnv;	// Register IX
 	
-	PBEnv = &PBTBL[CurChn];		// ptr to this ch's bends
+	CurChn = GETCBYTE();		// get channel
+	PBEnv = PBTBL + CurChn;		// ptr to this ch's bends
 	PBEnv[PBPBL] = GETCBYTE();	// get pitch bend in half steps (8 fracs) into
 	PBEnv[PBPBH] = GETCBYTE();
-	PBEnv[PBRETRIG] |= 0x01;	// [SET #0]
 	NEEDBEND = 1;
 	
 	return;
@@ -2282,8 +2097,7 @@ static void DOPITCHBEND(UINT8 CurChn)
 //	and reset NEEDBEND
 static void APPLYBEND(void)
 {
-	UINT8* VTPtr;	// Register IY
-	UINT8* PBPtr;	// Register IY
+	UINT8* VTPtr;	// Register IX
 	UINT8 VocNum;	// Register B
 	UINT8 NoteNum;	// Register C
 	UINT8 ChnNum;	// Register E
@@ -2292,9 +2106,6 @@ static void APPLYBEND(void)
 	if (! NEEDBEND)
 		return;		// return if no bend needed
 	NEEDBEND = 0;	// clear the flag and go for it
-	
-	CHECKTICK();
-	
 	for (VTPtr = FMVTBL; ; VTPtr += 7)	// go through FM voice table
 	{
 		//pbfmloop:
@@ -2307,12 +2118,11 @@ static void APPLYBEND(void)
 #ifdef DUAL_SUPPORT
 		ChnNum &= 0x0F;
 #endif
-		
-		PBPtr = &PBTBL[ChnNum];				// ptr to pitch/envelope bend for this ch
-		if (! (PBPtr[PBRETRIG] & 0x01))		// check for change in bend on this channel [BIT #0]
+		// [not in actual code] prevent from bending CH3 special mode channels
+		if (PATCHDATA[ChnNum * 39 + 2] & 0x40)
 			continue;
-		
-		noteonffreq = GETFREQ(0, ChnNum, NoteNum, PBPtr);	// get the new freq num for this voice
+		// [not in actual code end]
+		noteonffreq = GETFREQ(0, ChnNum, NoteNum);	// get the new freq num for this voice
 		
 		if (VocNum <= 3)		// is voice in bank 1 ?
 		{
@@ -2341,12 +2151,7 @@ static void APPLYBEND(void)
 		VocNum = VTPtr[VTBLFLAGS] & 7;	// voice number
 		NoteNum = VTPtr[VTBLNOTE];		// note number
 		ChnNum = VTPtr[VTBLCH];			// channel number
-		
-		PBPtr = &PBTBL[ChnNum];				// ptr to pitch/envelope bend for this ch
-		if (! (PBPtr[PBRETRIG] & 0x01))		// check for change in bend on this channel [BIT #0]
-			continue;
-		
-		noteonffreq = GETFREQ(1, ChnNum, NoteNum, PBPtr);	// get the new freq num for this voice
+		noteonffreq = GETFREQ(1, ChnNum, NoteNum);	// get the new freq num for this voice
 		
 		DACxME();
 		
@@ -2358,14 +2163,6 @@ static void APPLYBEND(void)
 		PSG_Write(NoteNum);		// write tone msb
 	}
 	
-	//pbdone:
-	PBPtr = &PBTBL[PBRETRIG];
-	for (ChnNum = 0; ChnNum < 16; ChnNum ++, PBPtr ++)
-	{
-		//pbdoneloop:
-		PBPtr = 0;
-	}
-	
 	return;
 }
 
@@ -2375,13 +2172,12 @@ static void APPLYBEND(void)
 //		parameters:	A	0 for FM, 1 for PSG
 //					C	note (0=C0, 95=B7)
 //					E	channel
-//					IX	pointer to this channel's PBTBL entry
 //
 //		returns:	DE	freq or wavelength value
-static UINT16 GETFREQ(UINT8 VType, UINT8 Channel, UINT8 Note, UINT8* PbPtr)
+static UINT16 GETFREQ(UINT8 VType, UINT8 Channel, UINT8 Note)
 {
-	INT16 gfpbend;		// [10A6] local pitch bend
-//	UINT8* PbPtr;		// Pitchbend Table Pointer, Register IX
+	INT16 gfpbend;		// [0F0D] local pitch bend
+	UINT8* PbPtr;		// Pitchbend Table Pointer, Register IX
 	UINT16* FTPtr;		// Frequency Table Pointer, Register IX
 	UINT8 TempByt;		// Register A
 	UINT8 PbNote;		// Register C
@@ -2389,6 +2185,7 @@ static UINT16 GETFREQ(UINT8 VType, UINT8 Channel, UINT8 Note, UINT8* PbPtr)
 	
 	DACxME();
 	
+	PbPtr = &PBTBL[Channel];	// ptr to pitch/envelope bend for this ch
 	gfpbend = (PbPtr[PBPBH] << 8) | (PbPtr[PBPBL] << 0);
 	gfpbend += (PbPtr[PBEBH] << 8) | (PbPtr[PBEBL] << 0);// pitchbend(IX) + envelopebend(IX)
 	
@@ -2461,21 +2258,7 @@ static UINT16 GETFREQ(UINT8 VType, UINT8 Channel, UINT8 Note, UINT8* PbPtr)
 	return PBValue;
 }
 
-// MULTIPLY - unsigned 8 x 16 multiply: HL <- A * DE
-//		MULADD entry point: for preloading HL with an offset
-//		GETPATPTR entry point: HL <- PATCHDATA + 39 * A
-static UINT8* GETPATPTR(UINT8 Channel)
-{
-#ifdef DUAL_SUPPORT
-	if (Channel & 0x80)
-		Channel &= 0x7F;
-#endif
-	return &PATCHDATA[Channel * 39];
-}
-
-//static UINT16 MULTIPLY(UINT8 Val8, UINT16 Val16)	// not needed in C
-
-
+//static UINT16 MUL39(UINT16 Value);	// not needed in C
 // NOTEON - note on (key on)
 //		parameters:	B			midi channel
 //					C			note number: 0..95 = C0..B7
@@ -2484,12 +2267,7 @@ static UINT8* GETPATPTR(UINT8 Channel)
 static void NOTEON(UINT8 MidChn, UINT8 Note, UINT8* ChnCCB)
 {
 	DACxME();
-	
-	noteon.atten = MASTERATN + ChnCCB[CCBATN];	// sum channel and master attenuations, limit to 127
-	if (noteon.atten >= 0x80)
-		noteon.atten = 127;
-	
-	noteon.note = Note;	// save note and channel
+	noteon.note = Note;
 	noteon.ch = MidChn;
 	
 	FILLDACFIFO(0x00);
@@ -2538,7 +2316,7 @@ static void noteonpsg(UINT8 MidChn, UINT8* ChnCCB, UINT8 Mode)
 	
 	VTANDET(ChnCCB, VTblPtr, AllocFlags);	// call code shared by FM and PSG to update
 											//   VoiceTable AND Envelope Trigger
-	ChnFreq = GETFREQ(1, MidChn, noteon.note, &PBTBL[MidChn]);
+	ChnFreq = GETFREQ(1, MidChn, noteon.note);
 	
 	ChnPat = CHPATPTR + 1;					// patch pointer
 	
@@ -2592,12 +2370,8 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	if (AllocFlags == 0xFF)
 		return;				// return if unable to allocate
 	
-	if (! (AllocFlags & 0x80))	// was it in use? [BIT #7]
-	{
-		DacMeEn = 0xC9;			// yes - disable DACME in case it was on to speed noteondig
-		if (! (AllocFlags & 0x20))					// yes - was it FM? [BIT #5]
-			FMWrite(0, 0x28, AllocFlags & 0x07);	// yes - do a keyoff
-	}
+	if ((AllocFlags & 0xA0) == 0x00)			// was it in use? [BIT #7], was it FM? [BIT #5]
+		FMWrite(0, 0x28, AllocFlags & 0x07);	// yes - do a keyoff
 	//noteondig2:
 	VTANDET(ChnCCB, VTblPtr, AllocFlags);	// call code shared by FM and PSG to update
 											//   VoiceTable AND Envelope Trigger
@@ -2617,7 +2391,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	
 	XFER68K(&SAMP.FLAGS, DData, SmplPos, 12);	// read 12 byte header, into ... sample header cache
 	
-	if (Read24Bit(SAMP.PTR) > 0x20000)			// [not in actual code - >512 KB]
+	if (Read24Bit(SAMP.PTR) > 0x20000)			// [not in actual code - > 512 KB]
 		SAMP.FIRST = 0;
 	if (SAMP.FIRST == 0)						// check for non-zero sample length
 	{
@@ -2672,20 +2446,6 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	
 	DacMeEn = 0xD9;							// opcode "EXX", enable DACME routine
 	
-	if ((SAMP.FLAGS & 0x0F) < 10)			// check for slow dacme mode: samp rate = 5.2kHz, samples rate <= 5.2?
-		DacMeRet = 0xC9;					// opcode "RET", to disable toggling
-	else
-		DacMeRet = 0x00;					// (if slow, put a NOP at DACMERET to enable toggling)
-	
-	if (SAMP.FLAGS & 0x80)
-	{
-		DacMeProc = DACME4BINST;			// jump to DACMEDSP for DACMEPROC
-		DacCtrlPat = 0xAA;					// pattern to control nibble selection in DACMEDSP
-	}
-	else
-	{
-		DacMeProc = 0x00;					// (2 nops for 8 bit mode) [only 1 here]
-	}
 	return;
 }
 
@@ -2723,7 +2483,7 @@ static void noteonfm(UINT8 MidChn, UINT8* ChnCCB)
 	
 	if (! (CHPATPTR[2] & 0x40))					// skip freq computation for CH3 mode [BIT #6]
 	{
-		noteonffreq = GETFREQ(0, MidChn, noteon.note, &PBTBL[MidChn]);
+		noteonffreq = GETFREQ(0, MidChn, noteon.note);
 		DACxME();
 	}
 	
@@ -2745,22 +2505,13 @@ static void noteonfm(UINT8 MidChn, UINT8* ChnCCB)
 		VocNum -= 4;							// yes, subtract 4 (map 4-6 >> 0-2)
 		CurBnk = 2;								// indicates bank 1 to FMWr
 	}
-#ifdef DUAL_SUPPORT
-	CurBnk |= CHIP_BNK(VTblPtr);
-#endif
 	//fmbank0:
-	if (ChnPat[0] & 0x08)						// only load if LFO on in this patch
-	{
 #ifndef DUAL_SUPPORT
-		FMWrgl(0x22, ChnPat[0]);				// write lfo register
+	FMWrgl(0x22, ChnPat[0]);					// write lfo register
 #else
-		FMWrite(CurBnk & 0x04, 0x22, ChnPat[0]);
+	CurBnk |= CHIP_BNK(VTblPtr);
+	FMWrite(CurBnk & 0x04, 0x22, ChnPat[0]);
 #endif
-	}
-	//fmlfodis:
-	
-	AllocFlags = ChnPat[2] & 7;					// lookup up carrier mask by alg number
-	CARRIERS = CARRIERTBL[AllocFlags];			// bit 0 for op 1 carrier, bit 1 for op 2 carrier...
 	
 	WRITEFM(ChnPat, CurBnk, VocNum);
 	
@@ -2804,7 +2555,6 @@ static void WRITEFM(const UINT8* InsList, UINT8 Bank, UINT8 Channel)
 	const UINT8* RegList;	// Register BC
 	UINT8 CurReg;
 	UINT8 CurData;
-	UINT8 NoteAtt;
 	
 	RegList = FMADDRTBL;
 	while(*RegList)	// (0 = EOT)
@@ -2818,36 +2568,12 @@ static void WRITEFM(const UINT8* InsList, UINT8 Bank, UINT8 Channel)
 		CurReg += Channel;				// add voice num to point at correct register
 		YM2612_Write(Bank, CurReg);
 		CurData = *RegList;				// get data offset
+		RegList ++;
 		if (CurData)					// if data offset 0, just write 0
-		{
-			if (CurData & 0x80)			// msb indicates total level values
-			{
-				CurData &= 0x7F;
-				if (CARRIERS & 0x01)	// is this a carrier?
-				{
-					CurData = 127 - InsList[CurData];
-					NoteAtt = ((CurData << 1) * noteon.atten) >> 8;
-					CurData -= NoteAtt;	// reduce by attenuation amount
-					CurData = 127 - CurData;
-				}
-				else					// no - normal output
-				{
-					//nottl0:
-					//nottl:
-					CurData = InsList[CurData];	// (IX+dataoffset)
-				}
-				CARRIERS >>= 1;			// [the best way to simulate RR + JP NC]
-			}
-			else
-			{
-				//nottl:
-				CurData = InsList[CurData];	// (IX+dataoffset)
-			}
-		}
+			CurData = InsList[CurData];	// (IX+dataoffset)
 		
 		//writefm0:
 		YM2612_Write(Bank + 1, CurData);
-		RegList ++;
 	}
 	
 	return;
@@ -2879,7 +2605,7 @@ static void VTANDET(UINT8* ChnCCB, UINT8* VTblPtr, UINT8 VFlags)
 #ifndef DUAL_SUPPORT
 	VTblPtr[VTBLCH] = noteon.ch;
 #else
-	VTblPtr[VTBLCH] &= ~0x0F;			// keep the high 4 bit
+	VTblPtr[VTBLCH] &= ~0x0F;			// keep higher 4 bit
 	VTblPtr[VTBLCH] |= noteon.ch;
 #endif
 	VTblPtr[VTBLDL] = ChnCCB[CCBDURL];
@@ -2904,8 +2630,8 @@ static void VTANDET(UINT8* ChnCCB, UINT8* VTblPtr, UINT8 VFlags)
 //					C	note number: bits 6:4 = octave, bits 3:0 = note (0-11)
 static void NOTEOFF(UINT8 MidChn, UINT8 NoteNum)
 {
-//	UINT8 noteoffnote;	// [169C] [not needed, equals NoteNum]
-//	UINT8 noteoffch;	// [169D] [not needed, equals MidChn]
+//	UINT8 noteoffnote;	// [1482] [not needed, equals NoteNum]
+//	UINT8 noteoffch;	// [1483] [not needed, equals MidChn]
 	UINT8 VocFlags;
 	
 	DACxME();
@@ -2976,10 +2702,12 @@ static void PCHANGE(void)
 	UINT8 Channel;		// Register A
 	UINT8* ChnCCB;		// Register IX
 	
-	Channel = GETCCBPTR(&ChnCCB);	// GETCBYTE for channel, IX <- CCB ptr, A <- channel
-	CHPATPTR = GETPATPTR(Channel);	// PATCHDATA + 39 * A
+	Channel = GETCBYTE();
+	CHPATPTR = &PATCHDATA[Channel * 39];
 	
-	ChnCCB[CCBPNUM] = GETCBYTE();	// set program number in CCB
+	ChnCCB = PTOCCB(Channel);		// pointer to this channel's CCB
+	
+	ChnCCB[CCBPNUM] = GETCBYTE();;	// set program number in CCB
 	
 	// actually the code falls though to FETCHPATCH
 	FETCHPATCH(ChnCCB);
@@ -2992,8 +2720,8 @@ static void FETCHPATCH(UINT8* ChnCCB)
 	// Parameters:
 	//	IX - CCB Pointer
 	UINT32 PTblPtr;
-	UINT16 TempOfs;
-	UINT8 fpoffset[2];	// [1726], shared with TRIGENV
+	UINT8 TempOfs;
+	UINT8 fpoffset[2];	// [150C], shared with TRIGENV
 	UINT16 fpoffset_s;
 	
 	TempOfs = ChnCCB[CCBPNUM] << 1;					// pnum * 2
@@ -3041,8 +2769,8 @@ static void PATCHLOAD(UINT8 InsNum)
 //					HL	pointer to entry allocated
 static UINT8 ALLOC(UINT8 MidChn, UINT8* ChnCCB, UINT8* VTblPtr, UINT8** RetAlloc)
 {
-	UINT8* avlowestp;	// [17DA] pointer to lowest priority
-	UINT8* avfreestp;	// [17DC] pointer to longest free
+	UINT8* avlowestp;	// [15CA] pointer to lowest priority
+	UINT8* avfreestp;	// [15CC] pointer to longest free
 	UINT8 CurPrio;		// Register C
 	UINT8 CurFree;		// Register L
 	
@@ -3058,11 +2786,7 @@ static UINT8 ALLOC(UINT8 MidChn, UINT8* ChnCCB, UINT8* VTblPtr, UINT8** RetAlloc
 		{
 			//avfree:
 			// its free - same channel is requester?, yes - sustain on? [BIT #7]
-#ifndef DUAL_SUPPORT
 			if (VTblPtr[VTBLCH] == MidChn && ! (ChnCCB[CCBFLAGS] & 0x80))
-#else
-			if ((VTblPtr[VTBLCH] & 0x0F) == MidChn && ! (ChnCCB[CCBFLAGS] & 0x80))
-#endif
 			{
 				*RetAlloc = VTblPtr;
 				return VTblPtr[VTBLFLAGS];
@@ -3144,11 +2868,7 @@ static UINT8 DEALLOC(UINT8 MidChn, UINT8 Note, UINT8* VTblPtr)
 		//dvstart:
 		if (VTblPtr[VTBLFLAGS] & 0x80)	// if if free skip this voice [BIT #7]
 			continue;
-#ifndef DUAL_SUPPORT
 		if (VTblPtr[VTBLNOTE] == Note && VTblPtr[VTBLCH] == MidChn)
-#else
-		if (VTblPtr[VTBLNOTE] == Note && (VTblPtr[VTBLCH] & 0x0F) == MidChn)
-#endif
 		{
 			VFlags = VTblPtr[VTBLFLAGS];
 			if ((VFlags & 0x27) != 0x26)						// check for digital - locked and voice num=6
@@ -3234,7 +2954,7 @@ static void CheckForSongEnd(void)
 	ChnMask = 0x00;
 	for (CurChn = 0x00; CurChn < 0x10; CurChn ++)
 	{
-		ChnCCB = GETCCBPTR2(CurChn);
+		ChnCCB = PTOCCB(CurChn);
 		if (ChnCCB[CCBFLAGS] & 0x01)	// channel in use?
 			ChnMask |= (1 << CurChn);	// add to channel mask
 	}
