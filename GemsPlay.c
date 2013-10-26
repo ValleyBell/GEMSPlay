@@ -13,12 +13,16 @@
 extern int __cdecl printf(const char *, ...);
 
 extern void YM2612_Write(UINT8 Addr, UINT8 Data);
+extern void YM2612_WriteA(UINT8 Addr, UINT8 Data);
 extern UINT8 YM2612_Read(UINT8 Addr);
 extern void PSG_Write(UINT8 Data);
 
+extern void DACPlay(UINT8 Sample, UINT8 SmpFlags);	// for VGM logging
+extern void DACStop(UINT8 FinishLoop);	// for VGM logging
+
 static void CheckForSongEnd(void);
-void StartSignal(UINT8 SeqNum);
-void StopSignal(void);
+extern void StartSignal(UINT8 SeqNum);
+extern void StopSignal(void);
 
 /*UINT8 ym2612_r(UINT8 ChipID, UINT32 offset);
 void ym2612_w(UINT8 ChipID, UINT32 offset, UINT8 data);
@@ -691,7 +695,7 @@ static void DOPSGENV(void)
 	//vquit:
 	DACxME();
 	if (NoteEnd && SongAlmostEnd)
-		CheckForSongEnd();
+		CheckForSongEnd();	// [not in actual code]
 	return;
 }
 
@@ -743,7 +747,7 @@ static void XFER68K(UINT8* DstPtr, const UINT8* SrcData, UINT32 SrcAddr, UINT8 B
 	if (SrcAddr & 0x800000)	// [not in actual code] catch bad offsets
 		return;
 	
-	DACxME();	// they put this call EVERYWHERE
+	DACxME();	// [they put this call EVERYWHERE]
 	
 	//SrcPtr = &ROMData[SrcAddr];
 	SrcPtr = &SrcData[SrcAddr];
@@ -769,7 +773,7 @@ void DACME(void)
 {
 	UINT8 CurSmpl;
 	
-	if (DacMeEn == 0x18)		// JR DACMEALT
+	if (DacMeEn == DACMEJRINST)	// JR DACMEALT
 	{
 		//DACMEALT:
 		// changes DACME back to working next time
@@ -782,17 +786,16 @@ void DACME(void)
 	}
 	
 	// dacmepoint:
-	YM2612_Write(0, 0x27);			// 0x4000 = 0x27
+	YM2612_WriteA(0, 0x27);			// 0x4000 = 0x27
 	// dacmespin:
 	//while(! (YM2612_Read(0) & 0x01))	// BIT 0, 0x4000
 	//	;
 	if (! (YM2612_Read(0) & 0x01))
 		return;
-	// [not in actual code]
-	FILLDACFIFO(0x00);
-	// [not in actual code end]
 	
-	YM2612_Write(1, Ch3ModeReg);	// reset timer (sets CH3 mode bits)
+	FILLDACFIFO(0x00);				// [not in actual code]
+	
+	YM2612_WriteA(1, Ch3ModeReg);	// reset timer (sets CH3 mode bits)
 	
 	CurSmpl = DACFIFO[DacFifoReg];	// get next byte from fifo
 	
@@ -819,8 +822,8 @@ void DACME(void)
 	}
 	
 	//DACMEOUT:
-	YM2612_Write(0, 0x2A);			// point FM chip at DAC data register
-	YM2612_Write(1, CurSmpl);		// output sample
+	YM2612_WriteA(0, 0x2A);			// point FM chip at DAC data register
+	YM2612_WriteA(1, CurSmpl);		// output sample
 	
 	//DACMERET:
 	// change to ZNOP for DACME's every other call
@@ -1516,7 +1519,7 @@ static void vtimerloop(UINT8 VoiceType, UINT8* VTblPtr)
 			}
 			
 			if (SongAlmostEnd)
-				CheckForSongEnd();
+				CheckForSongEnd();	// [not in actual code]
 		}
 	}
 	
@@ -1605,6 +1608,8 @@ void gems_loop(void)
 	
 	CHECKTICK();
 	
+	do	// [Note: This loop is not in the actual code. The actual code constantly loops this whole function instead.]
+	{
 	TickID = 0;
 	
 	if (TICKCNT > 0)	// check tick counter
@@ -1617,7 +1622,7 @@ void gems_loop(void)
 	//noticks:
 	DACxME();
 	
-	if (SBPTACC > 0x00FF)	// check beat counter (scaled by tempo) [actually only checks the MSB byte of SBPTACC]
+	if (SBPTACC >= 0x100)	// check beat counter (scaled by tempo) [actually only checks the MSB byte of SBPTACC]
 	{
 		SBPTACC -= 0x100;	// a beat (1/24 beat) 's gone by...
 		TickID |= 2;		//   set beat flag [SET #1]
@@ -1635,6 +1640,7 @@ void gems_loop(void)
 	}
 	//neithertick:
 	APPLYBEND();			// check if bends need applying
+	} while(SBPTACC >= 0x100 || TICKCNT);	// [not in actual code: Loop until all ticks are processed.]
 	
 	if (CMDWPTR == CMDRPTR)	// check for command bytes... compare read and write pointers
 		return;				// loop if no command bytes waiting [jp loop]
@@ -1974,7 +1980,6 @@ static void STOPSEQ(UINT8 SeqNum)
 		//stopseqskip:
 	}
 	CLIPALL();
-	CheckForSongEnd();	// [not in actual code]
 	
 	return;
 }
@@ -2007,83 +2012,30 @@ static void PAUSESEQ(UINT8 SeqNum)
 //		scans voice tables, clipping off notes from inactive (not running channels)
 static void CLIPALL(void)
 {
-// TODO: Re-port that function
-	UINT8* VTPtr;	// Register IX
-	UINT8* PRTbl;	// PSG Register Table Pointer, Register IY
-	UINT8 CLIPVNUM;	// [0CF8]
-	UINT8 VFlags;	// Register A
-	UINT8 CurBank;	// Register D
+	UINT8* CurECB;	// Register IY
+	UINT8* ChnCCB;	// Register HL
+	UINT8 EcbFlags;	// Register A
 	
-	VTPtr = FMVTBL;		// then do fm voices
-	while(VTPtr[VTBLFLAGS] != 0xFF)
-	{
-		//clipall0:
-		VFlags = VTPtr[VTBLFLAGS];	// get vtbl entry
-		VFlags &= 0x07;				// get voice num
-		VFlags |= 0x80;				// add free flag
-		VTPtr[VTBLFLAGS] = VFlags;	// update table
-		VTPtr[VTBLDL] = 0x00;		// clear release and duration timers
-		VTPtr[VTBLDH] = 0x00;
-		VTPtr[VTBLRT] = 0x00;
-		
-		VFlags &= 0x07;				// get voice num back
-		CLIPVNUM = VFlags;
-		CurBank = 0;				// point to bank 0
-		if (VFlags > 3)				// is voice in bank 1 ?
-		{
-			VFlags -= 4;			// yes, subtract 4 (map 4-6 >> 0-2)
-			CurBank = 2;			// point to bank 1
-		}
-#ifdef DUAL_SUPPORT
-		CurBank |= CHIP_BNK(VTPtr);
-#endif
-		//clpafm0:
-		FMWr(CurBank, VFlags, 0x40, 0x7F);
-		FMWr(CurBank, VFlags, 0x44, 0x7F);
-		FMWr(CurBank, VFlags, 0x48, 0x7F);
-		FMWr(CurBank, VFlags, 0x4C, 0x7F);
-		
-#ifndef DUAL_SUPPORT
-		FMWrite(0, 0x28, CLIPVNUM);	// key off
-#else
-		FMWrite(CurBank & 0x04, 0x28, CLIPVNUM);
-#endif
-		
-		VTPtr += 7;
-	}
-	//clipall0dun:
-	VTPtr = PSGVTBL;		// now psg voices
-	while(VTPtr[VTBLFLAGS] != 0xFF)
-	{
-		//clipall0:
-		VFlags = VTPtr[VTBLFLAGS];	// get vtbl entry
-		VFlags &= 0x07;				// get voice num
-		VFlags |= 0x80;				// add free flag
-		VTPtr[VTBLFLAGS] = VFlags;	// update table
-		VTPtr[VTBLDL] = 0x00;		// clear release and duration timers
-		VTPtr[VTBLDH] = 0x00;
-		VTPtr[VTBLRT] = 0x00;
-		VFlags &= 3;
-		CLIPVNUM = VFlags;
-		PRTbl = &pdata.psgcom[VFlags];	// load psg register table, point to correct register
-		PRTbl[COM] = 4;				// set stop command
-		
-		VTPtr += 7;
-	}
-	//clipall1dun:
-	VTPtr = PSGVTBLNG;			// now noise voice
-	VTPtr[VTBLFLAGS] = 0x83;	// update table
-	VTPtr[VTBLDL] = 0x00;		// clear release and duration timers
-	VTPtr[VTBLDH] = 0x00;
-	VTPtr[VTBLRT] = 0x00;
-	PRTbl = &pdata.psgcom[0x03];	// load psg register table, point to correct register
-	PRTbl[COM] = 4;				// set stop command
+	CLIPLOOP(FMVTBL, 0);	// do fm voices
+	CLIPLOOP(PSGVTBL, 1);
+	CLIPLOOP(PSGVTBLNG, 1);
 	
-	// shut off digital
-	DacMeEn = 0xC9;			// disable DACME routine
-	FillDacEn = 0xC9;		// disable FILLDACFIFO
-	YM2612_Write(0, 0x2B);	// disable DAC mode
-	YM2612_Write(1, 0x00);
+	//clipenvloop:
+	for (CurECB = ECB; ; CurECB ++)
+	{
+		EcbFlags = CurECB[ECBCHAN];
+		if (EcbFlags & 0x80)			// end of list? [BIT #7]
+			break;
+		if (EcbFlags & 0x40)			// in use? [BIT #6]
+			continue;
+		ChnCCB = &CCB[(EcbFlags & 0x0F) << 5];
+		if (ChnCCB[CCBFLAGS] & 0x40)	// running? [BIT #4]
+			continue;					// yes - don't clip this env
+		
+		CurECB[ECBCHAN] |= 0x40;		// [SET #6]
+	}
+	
+	CheckForSongEnd();	// [not in actual code]
 	
 	return;
 }
@@ -2091,6 +2043,70 @@ static void CLIPALL(void)
 // IX <- voice table, E <- 0 for fm, 1 for psg
 static void CLIPLOOP(UINT8* VTblPtr, UINT8 Mode)
 {
+	UINT8* ChnCCB;	// Register HL
+	UINT8* PRTbl;	// PSG Register Table Pointer, Register IY
+	UINT8 CLIPVNUM;	// [0CF8]
+	UINT8 VFlags;	// Register A
+	UINT8 CurBank;	// Register D
+	
+	for ( ; VTblPtr[VTBLFLAGS] != 0xFF; VTblPtr += 7)	//clipnxt:
+	{
+		ChnCCB = &CCB[(VTblPtr[VTBLCH] & 0x0F) << 5];
+		if (ChnCCB[CCBFLAGS] & 0x10)	// running? [BIT #4]
+			continue;					// yes - don't clip
+		
+		VFlags = VTblPtr[VTBLFLAGS];	// get vtbl entry
+		VFlags &= 0x07;					// get voice num
+		VFlags |= 0x80;					// add free flag
+		VTblPtr[VTBLFLAGS] = VFlags;	// update table
+		VTblPtr[VTBLDL] = 0x00;			// clear release and duration timers
+		VTblPtr[VTBLDH] = 0x00;
+		VTblPtr[VTBLRT] = 0x00;
+		
+		VFlags &= 0x07;					// get voice num back
+		CLIPVNUM = VFlags;
+		if (! (Mode & 0x01))			// fm or psg? [BIT #0]
+		{
+			if (VTblPtr[VTBLFLAGS] & 0x20)	// fm - digital mode? [BIT #5]
+			{
+				DacMeEn = 0xC9;				// disable DACME routine
+				FillDacEn = 0xC9;			// disable FILLDACFIFO
+				YM2612_Write(0, 0x2B);		// disable DAC mode
+				YM2612_Write(1, 0x00);
+			}
+			else
+			{
+				//clipfm:
+				CurBank = 0;				// point to bank 0
+				if (VFlags > 3)				// is voice in bank 1 ?
+				{
+					VFlags -= 4;			// yes, subtract 4 (map 4-6 >> 0-2)
+					CurBank = 2;			// point to bank 1
+				}
+#ifdef DUAL_SUPPORT
+				CurBank |= CHIP_BNK(VTblPtr);
+#endif
+				//clpafm0:
+				FMWr(CurBank, VFlags, 0x40, 0x7F);	// clamp all EGs
+				FMWr(CurBank, VFlags, 0x44, 0x7F);
+				FMWr(CurBank, VFlags, 0x48, 0x7F);
+				FMWr(CurBank, VFlags, 0x4C, 0x7F);
+				
+#ifndef DUAL_SUPPORT
+				FMWrite(0, 0x28, CLIPVNUM);	// key off
+#else
+				FMWrite(CurBank & 0x04, 0x28, CLIPVNUM);
+#endif
+			}
+		}
+		else
+		{
+			//clippsg:
+			PRTbl = &pdata.psgcom[VFlags];	// load psg register table, point to correct register
+			PRTbl[COM] = 4;					// set stop command
+		}
+	}
+	
 	return;
 }
 
@@ -2569,7 +2585,7 @@ static void noteonpsg(UINT8 MidChn, UINT8* ChnCCB, UINT8 Mode)
 	//else [jr pskon]						// for TG1-TG3, go on to rest of control regs
 	//pskon:
 	PSGCtrl[ATK] = ChnPat[1];				// load and write attack rate
-	PSGCtrl[SLV] = ChnPat[2] << 4;			// load and write sustain rate, fix significance (<<4)
+	PSGCtrl[SLV] = ChnPat[2] << 4;			// load and write sustain level, fix significance (<<4)
 	PSGCtrl[ALV] = ChnPat[3] << 4;			// load and write attack level, fix significance (<<4)
 	PSGCtrl[DKY] = ChnPat[4];				// load and write decay rate
 	PSGCtrl[RRT] = ChnPat[5];				// load and write release rate
@@ -2676,6 +2692,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 		DacMeRet = 0xC9;					// opcode "RET", to disable toggling
 	else
 		DacMeRet = 0x00;					// (if slow, put a NOP at DACMERET to enable toggling)
+	// [Note: Toggling is done to make the Z80 do less busy-waiting for the YM2612.]
 	
 	if (SAMP.FLAGS & 0x80)
 	{
@@ -2686,6 +2703,9 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	{
 		DacMeProc = 0x00;					// (2 nops for 8 bit mode) [only 1 here]
 	}
+	
+	DACPlay(CurSmpl, SAMP.FLAGS);
+	
 	return;
 }
 
@@ -2960,11 +2980,13 @@ static void NOTEOFFDIG(void)
 	{
 		//noteoffdig1:
 		FDFSTATE = 7;			// yes - shut down digitial
+		DACStop(0x00);
 	}
 	else if (SAMP.FLAGS & 0x10)	// is it looped? [BIT #4]
 	{
 		//noteoffdig2:
 		FDFSTATE = 6;			// yes - indicate end of loop
+		DACStop(0x01);
 	}
 	
 	return;
@@ -3205,6 +3227,20 @@ void SetDataFiles(const UINT8* PatPtr, const UINT8* EnvPtr,
 		PData = EData;
 	
 	return;
+}
+
+const UINT8* GetDataPtr(UINT8 DataType)
+{
+	if (DataType == 0x00)
+		return PData + Read24Bit(Tbls.PTBL68K);
+	else if (DataType == 0x01)
+		return EData + Read24Bit(Tbls.ETBL68K);
+	else if (DataType == 0x02)
+		return SData + Read24Bit(Tbls.STBL68K);
+	else if (DataType == 0x03)
+		return DData + Read24Bit(Tbls.DTBL68K);
+	
+	return NULL;
 }
 
 void WriteFIFOCommand(UINT8 CmdByte)
