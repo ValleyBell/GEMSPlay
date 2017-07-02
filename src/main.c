@@ -544,14 +544,14 @@ int main(int argc, char *argv[])
 	}
 	if (PatData == NULL && IniPath[0x00][0] != '\0')
 		LoadDataFile(IniPath[0x00], &PatLength, &PatData);
-	if (EnvData == NULL && IniPath[0x00][1] != '\0')
+	if (EnvData == NULL && IniPath[0x01][0] != '\0')
 		LoadDataFile(IniPath[0x01], &EnvLength, &EnvData);
-	if (SeqData == NULL && IniPath[0x00][2] != '\0')
+	if (SeqData == NULL && IniPath[0x02][0] != '\0')
 	{
 		LoadDataFile(IniPath[0x02], &SeqLength, &SeqData);
 		ROMName = IniPath[0x02];
 	}
-	if (SmpData == NULL && IniPath[0x00][3] != '\0')
+	if (SmpData == NULL && IniPath[0x03][0] != '\0')
 		LoadDataFile(IniPath[0x03], &SmpLength, &SmpData);
 	
 	if (ROMPtrs[0x00] && ROMPtrs[0x01] && ROMPtrs[0x02] && ROMPtrs[0x03])
