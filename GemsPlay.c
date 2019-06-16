@@ -1318,7 +1318,7 @@ static UINT8 seqcmd(UINT8* ChnCCB, UINT8* CHBUFPTR, UINT8 CurChn, UINT8 CmdByte)
 			UINT32 FinalAddr;
 			
 			CurArg = GETSBYTE(ChnCCB, CHBUFPTR);
-			JmpOfs = (GETSBYTE(ChnCCB, CHBUFPTR) << 8) | (JmpOfs << 0);
+			JmpOfs = (GETSBYTE(ChnCCB, CHBUFPTR) << 8) | (CurArg << 0);
 			//seqbranch:					// jump to addr + 24 bit offset in DHL
 			FinalAddr = Read24Bit(&ChnCCB[CCBADDRL]);
 			FinalAddr += JmpOfs;
@@ -2633,7 +2633,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	
 	XFER68K(&SAMP.FLAGS, DData, SmplPos, 12);	// read 12 byte header, into ... sample header cache
 	
-	if (Read24Bit(SAMP.PTR) > 0x20000)			// [not in actual code - >512 KB]
+	if (Read24Bit(SAMP.PTR) > 0x200000)			// [not in actual code - >512 KB]
 		SAMP.FIRST = 0;
 	if (SAMP.FIRST == 0)						// check for non-zero sample length
 	{
