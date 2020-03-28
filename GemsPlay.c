@@ -2908,7 +2908,7 @@ static void VTANDET(UINT8* ChnCCB, UINT8* VTblPtr, UINT8 VFlags)
 	
 	DACxME();
 	
-	if (ChnCCB[CCBFLAGS] & 0x20)	// envelope retrigger on?
+	if (ChnCCB[CCBFLAGS] & 0x40)	// envelope retrigger on? [BIT #6]
 	{
 		// yes - trigger the envelope
 		TRIGENV(ChnCCB, noteon.ch, ChnCCB[CCBENV]);
