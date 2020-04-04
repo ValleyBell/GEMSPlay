@@ -2222,6 +2222,7 @@ static void DOENVELOPE(void)
 					}
 					else
 					{
+						SegCntr --;
 						SegPos ++;
 						CurECB[ECBDELL] = ENV0BUF[SegPos];
 						SegPos ++;
@@ -2229,7 +2230,7 @@ static void DOENVELOPE(void)
 						SegPos ++;
 						DACxME();
 						SegPos += 0x1E80;					// [not in actual code, SegPos is relative to ENV0BUF here]
-						CurECB[ECBPTRL] = (SegPos & 0x00FF) >> 0;
+						CurECB[ECBPTRL] = (SegPos & 0x00FF) >> 0;	// ECB's segment ptr <- ptr to next segment
 						CurECB[ECBPTRH] = (SegPos & 0xFF00) >> 8;
 						// [fall through to envseg]
 					}
@@ -2373,7 +2374,7 @@ static void APPLYBEND(void)
 	for (ChnNum = 0; ChnNum < 16; ChnNum ++, PBPtr ++)
 	{
 		//pbdoneloop:
-		PBPtr = 0;
+		*PBPtr = 0;
 	}
 	
 	return;
@@ -3257,7 +3258,7 @@ void FinishCommandFIFO(void)
 static void CheckForSongEnd(void)
 {
 	UINT8 CurChn;
-	UINT8 ChnMask;
+	UINT16 ChnMask;
 	UINT8* ChnCCB;
 	UINT8* VTblPtr;
 	

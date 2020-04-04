@@ -2030,6 +2030,7 @@ static void DOENVELOPE(void)
 					}
 					else
 					{
+						SegCntr --;
 						SegPos ++;
 						CurECB[ECBDELL] = ENV0BUF[SegPos];
 						SegPos ++;
