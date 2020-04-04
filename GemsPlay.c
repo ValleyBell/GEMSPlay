@@ -107,7 +107,7 @@ static struct
 	UINT8 psgdec[4];		// [0015] 12 decay rate
 	UINT8 psgslv[4];		// [0019] 16 sustain level attenuation
 	UINT8 psgrrt[4];		// [001D] 20 release rate
-	UINT8 psgenv[4];		// [0021] 24 envelope mode 0 = off, 1 = attack, 2 = decay, 3 = sustain, 4
+	UINT8 psgenv[4];		// [0021] 24 envelope mode 0 = off, 1 = attack, 2 = decay, 3 = sustain, 4 = release
 	UINT8 psgdtl[4];		// [0025] 28 tone bottom 4 bits, noise bits
 	UINT8 psgdth[4];		// [0029] 32 tone upper 6 bits
 	UINT8 psgalv[4];		// [002D] 36 attack level attenuation
@@ -700,7 +700,7 @@ static void DOPSGENV(void)
 }
 
 
-/***************************** Command FIFO (from 68000) ************************************/
+/***************************** Command FIFO (from 68000) ***************************************/
 
 
 // GETCBYTE - returns the next command byte in the fifo from the 68k. will wait
@@ -1880,7 +1880,7 @@ void STARTSEQ(UINT8 SeqNum)
 	UINT8 DoGems28;
 	
 	StartSignal(SeqNum);
-	SBPTACC = 0;		// [note in actual code] reset current tempo ticks to prevent bugs
+	SBPTACC = 0;		// [not in actual code] reset current tempo ticks to prevent bugs
 	
 	stseqsnum = SeqNum;
 	STblPtr = Read24Bit(Tbls.STBL68K);		// [not in actual code] caching for later use
@@ -2029,7 +2029,7 @@ static void CLIPALL(void)
 		if (EcbFlags & 0x40)			// in use? [BIT #6]
 			continue;
 		ChnCCB = &CCB[(EcbFlags & 0x0F) << 5];
-		if (ChnCCB[CCBFLAGS] & 0x40)	// running? [BIT #4]
+		if (ChnCCB[CCBFLAGS] & 0x10)	// running? [BIT #4]
 			continue;					// yes - don't clip this env
 		
 		CurECB[ECBCHAN] |= 0x40;		// [SET #6]
@@ -2277,7 +2277,7 @@ static void DOENVELOPE(void)
 	return;
 }
 
-// DOPITCHBEND- updates the (pitchbend) value for the gems channel (= MIDI channel during perf [another cut comment]
+// DOPITCHBEND- updates the (pitchbend) value for the gems channel (= MIDI channel during perf mode)
 //
 //		inputs:		A							CCB number (0-15)
 //					(next 2 bytes in cmd queue)	pbend value
@@ -2619,7 +2619,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 											//   VoiceTable AND Envelope Trigger
 	FMVTBLCH6[VTBLFLAGS] |= 0x20;			// lock the voice from FM allocation [SET #5]
 	
-	// at this point, C is note number - C4 >> B7 equals samples  0 through 47 (for back compatibil
+	// at this point, C is note number - C4 >> B7 equals samples  0 through 47 (for back compatibility)
 	//									 C0 >> B3 equals samples 48 through 96
 	// trigger sample by reading sample bank table for header
 	CurSmpl = noteon.note;	// [actually, it's read from Register C, which is unchanged from NOTEON]
@@ -2642,7 +2642,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	}
 	
 	//sampleok:
-	// now check for sample playback rate override (2nd byte of patch != 4) - override rate in SAMP
+	// now check for sample playback rate override (2nd byte of patch != 4) - override rate in SAMPFLAGS
 	if (CHPATPTR[1] != 4)
 	{
 		SAMP.FLAGS &= 0xF0;					// replace counter value in flags (controls freq)

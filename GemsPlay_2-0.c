@@ -1250,7 +1250,7 @@ static UINT8 seqcmd(UINT8* ChnCCB, UINT8* CHBUFPTR, UINT8 CurChn, UINT8 CmdByte)
 			UINT32 FinalAddr;
 			
 			CurArg = GETSBYTE(ChnCCB, CHBUFPTR);
-			JmpOfs = (GETSBYTE(ChnCCB, CHBUFPTR) << 8) | (JmpOfs << 0);
+			JmpOfs = (GETSBYTE(ChnCCB, CHBUFPTR) << 8) | (CurArg << 0);
 			//seqbranch:					// jump to addr + 24 bit offset in DHL
 			FinalAddr = Read24Bit(&ChnCCB[CCBADDRL]);
 			FinalAddr += JmpOfs;
@@ -2614,7 +2614,7 @@ static void VTANDET(UINT8* ChnCCB, UINT8* VTblPtr, UINT8 VFlags)
 	
 	DACxME();
 	
-	if (ChnCCB[CCBFLAGS] & 0x20)	// envelope retrigger on?
+	if (ChnCCB[CCBFLAGS] & 0x40)	// envelope retrigger on? [BIT #6]
 	{
 		// yes - trigger the envelope
 		TRIGENV(ChnCCB, noteon.ch, ChnCCB[CCBENV]);
