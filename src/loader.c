@@ -90,6 +90,8 @@ void DetectSeqType(void)
 	
 	TrkCnt = SeqData[MinPos1];
 	MinPos1 ++;
+	if (MinPos2 == 0xFFFF)
+		MinPos2 = Read16Bit(&SeqData[MinPos1]);
 	
 	if (MinPos1 + 0x03 * TrkCnt == MinPos2)
 		Gems28Mode = 0x01;
@@ -344,7 +346,7 @@ void PreparseGemsSeq(UINT8 SongNo)
 						CurPos += 0x01;
 						break;
 					case 0x6F:	// Jump
-						CurPos = Read16Bit(&SeqData[CurPos]);
+						CurPos += (INT16)Read16Bit(&SeqData[CurPos]);
 						break;
 					case 0x70:	// Store Value
 						CurPos += 0x02;

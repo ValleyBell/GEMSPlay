@@ -842,10 +842,10 @@ void DACME(void)
 static void FILLDACFIFO(UINT8 ForceFill)
 {
 	UINT8 FillVal;
-	INT16 SmpCntr;		// Reg HL
+	INT32 SmpCntr;		// Reg HL (32-bit for easy underflow check)
 	UINT8 DstAddr;		// Reg E (of DE, D is always 0x1F)
 	UINT32 SmplPtr;
-	UINT8 SmplLeft;		// Reg BC (though B is always 0)
+	UINT16 SmplLeft;	// Reg BC (though B is always 0)
 	
 	if (! ForceFill)
 	{
@@ -871,7 +871,7 @@ static void FILLDACFIFO(UINT8 ForceFill)
 		if (SmpCntr > 0)
 		{
 			// FDF4NORM:
-			SAMPLECTR = SmpCntr;
+			SAMPLECTR = (UINT16)SmpCntr;
 			
 			// xfer next 128 samples from (SAMPLEPTR)
 			DstAddr = DACFIFOWPTR;
@@ -889,7 +889,7 @@ static void FILLDACFIFO(UINT8 ForceFill)
 		{
 			// FDF4DONE:	// for now, loop back
 			// xfer the samples that are left
-			SmplLeft = SmpCntr + 128;	// save # xfered here
+			SmplLeft = (UINT16)(SmpCntr + 128);	// save # xfered here
 			
 			DstAddr = DACFIFOWPTR;
 			DACFIFOWPTR += 128;			// increment dest addr for next time
@@ -916,6 +916,7 @@ static void FILLDACFIFO(UINT8 ForceFill)
 			SmplPtr += SmplLeft;			// add to sample pointer
 			SmplPtr -= SAMP.LOOP;			// then subtract loop length
 			Write24Bit(SAMPLEPTR, SmplPtr);	// store new (beginning of loop ptr)
+			SAMPLECTR = SAMP.LOOP;
 			
 			SmplLeft = 128 - SmplLeft;		// BC <- number to complete this 128byte bank
 			if (! SmplLeft)
@@ -926,6 +927,7 @@ static void FILLDACFIFO(UINT8 ForceFill)
 			XFER68K(DACFIFO + DstAddr, DData, SmplPtr, SmplLeft);	// reload FIFO
 			
 			SmplPtr += SmplLeft;			// SAMPLEPTR <- SAMPLEPTR + 128
+			Write24Bit(SAMPLEPTR, SmplPtr);
 			
 			// jp FDFreturn
 		}
@@ -1877,7 +1879,6 @@ void STARTSEQ(UINT8 SeqNum)
 	UINT8* StSqBuf;		// register HL
 	UINT8 CurChn;		// register B (but counting up)
 	UINT8 VirtChn;
-	UINT8 DoGems28;
 	
 	StartSignal(SeqNum);
 	SBPTACC = 0;		// [not in actual code] reset current tempo ticks to prevent bugs
@@ -1897,13 +1898,6 @@ void STARTSEQ(UINT8 SeqNum)
 		return;	// return if empty sequence
 	}
 	
-	DoGems28 = Gems28Mode;
-	if (stseqx[0] > 1)		// [extra code to detect GEMS 2.8]
-	{
-		if (stseqx[3] <= 1 && stseqx[6] <= 1)
-			DoGems28 = 0x01;
-	}
-	
 	ChnCCB = CCB;			// start with CCB 0
 	ChnPB = PBTBL;
 	StSqBuf = &stseqx[1];	// track pointers start at stseqx+1
@@ -1915,7 +1909,7 @@ void STARTSEQ(UINT8 SeqNum)
 			continue;					// if either set, skip ch
 		ChnCCB[CCBFLAGS] = 0x11;		// yes - set enable and running bits
 		
-		if (! DoGems28)
+		if (! Gems28Mode)
 		{
 			SeqPtr = STblPtr + Read16Bit(StSqBuf);	// addr of this track is 24 bit base pointer, plus 16 bit offset in descriptor
 			StSqBuf += 2;
@@ -2633,7 +2627,7 @@ static void noteondig(UINT8 MidChn, UINT8* ChnCCB)
 	
 	XFER68K(&SAMP.FLAGS, DData, SmplPos, 12);	// read 12 byte header, into ... sample header cache
 	
-	if (Read24Bit(SAMP.PTR) > 0x200000)			// [not in actual code - >512 KB]
+	if (Read24Bit(SAMP.PTR) > 0x80000)			// [not in actual code - >512 KB]
 		SAMP.FIRST = 0;
 	if (SAMP.FIRST == 0)						// check for non-zero sample length
 	{
