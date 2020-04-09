@@ -589,7 +589,7 @@ int main(int argc, char *argv[])
 		DisplayFileID(cursor);
 		
 		inkey = 0x00;
-		while(inkey != 0x1B)
+		while(inkey != 0x1B && inkey != 'Q')
 		{
 			switch(inkey)
 			{
@@ -676,6 +676,14 @@ int main(int argc, char *argv[])
 				break;
 			case 'V':
 				Enable_VGMDumping = ! Enable_VGMDumping;
+				if (Enable_VGMDumping)
+				{
+#ifdef _WIN32
+					_mkdir("dumps");
+#else
+					mkdir("dumps", 0755);
+#endif
+				}
 				ClearLine();
 				printf("VGM Logging %s.\r", Enable_VGMDumping ? "enabled" : "disabled");
 				WaitTimeForKey(1000);

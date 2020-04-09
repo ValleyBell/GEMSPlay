@@ -237,6 +237,7 @@ void PreparseGemsSeq(UINT8 SongNo)
 			ChnMode = 0x00;
 			TrkEnd = 0x00;
 			memset(LoopCount, 0x00, 0x10);
+			LoopID = 0xFF;
 			
 			while(! TrkEnd)
 			{
